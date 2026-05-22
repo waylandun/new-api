@@ -48,6 +48,8 @@ func (e *SubscriptionWindowError) Is(target error) bool {
 
 const maxInt64 int64 = 1<<63 - 1
 
+// remaining returns the quota left in a layer.
+// Returns maxInt64 when limit == 0 (layer disabled / unlimited convention).
 func remaining(limit, used int64) int64 {
 	if limit == 0 {
 		return maxInt64
@@ -58,8 +60,9 @@ func remaining(limit, used int64) int64 {
 	return limit - used
 }
 
-// windowExpired returns true if the rolling window should be reset.
-// limit==0 means layer is disabled — caller should skip.
+// windowExpired reports whether a rolling window should be reset.
+// Returns true if the window has never been opened (start == 0) or has expired (now >= start+size).
+// Callers must check limit > 0 separately to decide whether the layer is enabled.
 func windowExpired(start, size, now int64) bool {
 	return start == 0 || now >= start+size
 }

@@ -148,3 +148,36 @@ func TestSubscriptionWindowError_IsErrSubscriptionWindowExceeded(t *testing.T) {
 		t.Fatalf("errors.Is should match sentinel")
 	}
 }
+
+func TestApplyDelta_ZeroDelta_NoOp(t *testing.T) {
+	now := int64(1_000_000_000)
+	sub := subWith(500, 0, 1000, 500, now-100, 5000, 500, now-100)
+	ApplyDelta(sub, 0, now)
+	if sub.AmountUsed != 500 || sub.FiveHourUsed != 500 || sub.WeeklyUsed != 500 {
+		t.Fatalf("zero delta must not modify any used counter, got total=%d fh=%d wk=%d",
+			sub.AmountUsed, sub.FiveHourUsed, sub.WeeklyUsed)
+	}
+}
+
+func TestApply_ResetsBothWindowsAtOnce(t *testing.T) {
+	now := int64(1_000_000_000)
+	// Both windows expired (started before their respective sizes ago).
+	sub := subWith(0, 0,
+		1000, 800, now-fiveHourWindowSeconds-1,
+		5000, 4000, now-weeklyWindowSeconds-1,
+	)
+	res := EvaluateConsume(sub, &SubscriptionPlan{}, 100, now)
+	if !res.Allow {
+		t.Fatalf("want allow, got %+v", res)
+	}
+	if len(res.Resets) != 2 {
+		t.Fatalf("want 2 resets, got %d (%+v)", len(res.Resets), res.Resets)
+	}
+	ApplyConsume(sub, res, 100, now)
+	if sub.FiveHourUsed != 100 || sub.FiveHourWindowStart != now {
+		t.Fatalf("fiveHour: want 100/now, got %d/%d", sub.FiveHourUsed, sub.FiveHourWindowStart)
+	}
+	if sub.WeeklyUsed != 100 || sub.WeeklyWindowStart != now {
+		t.Fatalf("weekly: want 100/now, got %d/%d", sub.WeeklyUsed, sub.WeeklyWindowStart)
+	}
+}
