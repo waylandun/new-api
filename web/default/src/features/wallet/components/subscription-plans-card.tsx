@@ -103,7 +103,7 @@ function WindowBar(props: {
         <span>{props.label}</span>
         <span>
           {props.used.toLocaleString()} / {props.limit.toLocaleString()}
-          {props.resetAt
+          {props.resetAt && props.resetAt > Date.now() / 1000
             ? ` · ${props.resetLabel} ${new Date(props.resetAt * 1000).toLocaleString()}`
             : ''}
         </span>
