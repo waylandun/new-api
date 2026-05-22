@@ -270,12 +270,13 @@ func formatSubscriptionWindowMessage(userId int, e *model.SubscriptionWindowErro
 	return i18n.Translate(lang, key, args)
 }
 
-// i18nGetUserLang resolves a user's preferred language; returns empty string when unknown
-// (i18n.Translate falls back to DefaultLang in that case).
+// i18nGetUserLang resolves a user's preferred language. Returns "" when unknown,
+// in which case i18n.Translate falls back to DefaultLang.
 func i18nGetUserLang(userId int) string {
-	// User-language lookup is wired through i18n.SetUserLangLoader at startup; if no loader
-	// is registered or the user has no preference, fall back via i18n.Translate's default path.
-	return ""
+	if userId <= 0 {
+		return ""
+	}
+	return model.GetUserLanguage(userId)
 }
 
 func (s *BillingSession) reserveFunding(delta int) error {
