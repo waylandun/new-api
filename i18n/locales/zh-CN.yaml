@@ -278,3 +278,8 @@ custom_oauth.name_empty: "提供商名称不能为空"
 custom_oauth.has_bindings: "无法删除已有用户绑定的提供商"
 custom_oauth.binding_not_found: "OAuth 绑定不存在"
 custom_oauth.provider_id_field_invalid: "无法从提供商响应中提取用户 ID"
+
+# Subscription window-exhausted messages
+subscription.window_exceeded_total: "套餐总额已耗尽（{{.Used}}/{{.Limit}}）"
+subscription.window_exceeded_weekly: "周限额已耗尽（{{.Used}}/{{.Limit}}），将于 {{.ResetTime}} 重置"
+subscription.window_exceeded_five_hour: "5 小时限额已耗尽（{{.Used}}/{{.Limit}}），将于 {{.ResetTime}} 重置"

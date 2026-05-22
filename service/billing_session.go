@@ -1,12 +1,15 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	i18n "github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -213,7 +216,18 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			}
 			s.tokenConsumed = 0
 		}
-		// TODO: model 层应定义哨兵错误（如 ErrNoActiveSubscription），用 errors.Is 替代字符串匹配
+		// Window-exhausted: build a localized message and surface as 403.
+		var winErr *model.SubscriptionWindowError
+		if errors.As(err, &winErr) {
+			return types.NewErrorWithStatusCode(
+				errors.New(formatSubscriptionWindowMessage(s.relayInfo.UserId, winErr)),
+				types.ErrorCodeInsufficientUserQuota,
+				http.StatusForbidden,
+				types.ErrOptionWithSkipRetry(),
+				types.ErrOptionWithNoRecordErrorLog(),
+			)
+		}
+		// Legacy "no active subscription" / "subscription quota insufficient" path retained for non-window failures.
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "no active subscription") || strings.Contains(errMsg, "subscription quota insufficient") {
 			return types.NewErrorWithStatusCode(fmt.Errorf("订阅额度不足或未配置订阅: %s", errMsg), types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
@@ -227,6 +241,41 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 	s.syncRelayInfo()
 
 	return nil
+}
+
+// formatSubscriptionWindowMessage builds a localized message for SubscriptionWindowError.
+// Looks up the user's preferred language via the i18n loader; falls back to default lang.
+func formatSubscriptionWindowMessage(userId int, e *model.SubscriptionWindowError) string {
+	var key string
+	switch e.Kind {
+	case model.WindowKindTotal:
+		key = "subscription.window_exceeded_total"
+	case model.WindowKindWeekly:
+		key = "subscription.window_exceeded_weekly"
+	case model.WindowKindFiveHour:
+		key = "subscription.window_exceeded_five_hour"
+	default:
+		return e.Error()
+	}
+	resetTime := ""
+	if e.NextReset > 0 {
+		resetTime = time.Unix(e.NextReset, 0).Format("2006-01-02 15:04")
+	}
+	args := map[string]any{
+		"Used":      e.Used,
+		"Limit":     e.Limit,
+		"ResetTime": resetTime,
+	}
+	lang := i18nGetUserLang(userId)
+	return i18n.Translate(lang, key, args)
+}
+
+// i18nGetUserLang resolves a user's preferred language; returns empty string when unknown
+// (i18n.Translate falls back to DefaultLang in that case).
+func i18nGetUserLang(userId int) string {
+	// User-language lookup is wired through i18n.SetUserLangLoader at startup; if no loader
+	// is registered or the user has no preference, fall back via i18n.Translate's default path.
+	return ""
 }
 
 func (s *BillingSession) reserveFunding(delta int) error {

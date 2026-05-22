@@ -277,3 +277,8 @@ custom_oauth.name_empty: "Provider name cannot be empty"
 custom_oauth.has_bindings: "Cannot delete provider with existing user bindings"
 custom_oauth.binding_not_found: "OAuth binding not found"
 custom_oauth.provider_id_field_invalid: "Could not extract user ID from provider response"
+
+# Subscription window-exhausted messages
+subscription.window_exceeded_total: "Subscription total quota exhausted ({{.Used}}/{{.Limit}})"
+subscription.window_exceeded_weekly: "Weekly window exhausted ({{.Used}}/{{.Limit}}); resets at {{.ResetTime}}"
+subscription.window_exceeded_five_hour: "5-hour window exhausted ({{.Used}}/{{.Limit}}); resets at {{.ResetTime}}"
