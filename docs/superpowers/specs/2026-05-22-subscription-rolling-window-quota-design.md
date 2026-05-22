@@ -1,0 +1,455 @@
+# 订阅套餐 5 小时限额 + 周限额（会话式滚动窗口）设计
+
+- 日期：2026-05-22
+- 状态：已审定（待用户审阅）
+- 范围：`model/subscription.go`、`model/subscription_admin.go`（新增）、`model/subscription_window.go`（新增）、`controller/subscription.go`、`service/funding_source.go`、`web/default/src/features/subscriptions/*`、`web/default/src/features/wallet/*`、`i18n/`
+
+## 1. 背景
+
+当前用户订阅开发者套餐后，套餐对应的 `UserSubscription` 仅有一个生命周期总额（`AmountTotal`/`AmountUsed`），并支持按 `daily/weekly/monthly/custom` 周期把 `AmountUsed` 整体重置回 0（实现位置 `model/subscription.go:933` 的 `maybeResetUserSubscriptionWithPlanTx`）。这种"单层 + 整体重置"模型在套餐生命周期内允许用户一次性用尽全部额度，无法限制短时高峰用量；运营也缺少类似 Claude Pro 的"5 小时窗口 + 7 天窗口"用量节流能力。
+
+## 2. 目标
+
+在不破坏现有订阅语义的前提下：
+
+1. 为订阅引入两层"会话式滚动窗口"限额：
+   - **5h 滚动窗口**：用户首请求开窗，5 小时内累计用量不超过 `FiveHourLimit`；窗口过期后下一次请求自动开新窗。
+   - **7d 滚动窗口**：同上语义，窗口长度为 7×24 小时。
+2. 三层（生命周期总额 / 周窗口 / 5h 窗口）并存，**任一层打满即拒绝当前请求**。
+3. 限额数值在 `SubscriptionPlan` 上配置；用户购买订阅时把数值快照到 `UserSubscription` 上，存量订阅不受新字段影响。
+4. 管理员可对单个 `UserSubscription` 手动重置 5h 或周窗口。
+5. 所有改动在 SQLite/MySQL/PostgreSQL 三库下行为一致。
+
+## 3. 非目标
+
+- 不引入新的资金来源（仍然是订阅 + 钱包两路）。
+- 不变更现有的"套餐周期重置"逻辑（即 `quota_reset_period=daily/weekly/monthly/custom` 那一套）；它继续负责"AmountUsed 整体清零"，与新引入的滚动窗口正交。
+- 不引入按用户分组的限额，限额仍然挂在套餐上。
+- 不为存量已购订阅自动启用新限额（Q8 决定）。
+- 不修改 `web/classic` 旧前端。
+
+## 4. 术语
+
+| 术语 | 含义 |
+|---|---|
+| Total（总额） | `UserSubscription.AmountTotal` 与 `AmountUsed`，订阅生命周期内有效，到期作废 |
+| 5h 窗口 | 5 小时会话式滚动窗口；首请求开窗、过期后下次请求重新开窗 |
+| 周窗口 | 7×24 小时会话式滚动窗口，语义同上 |
+| 懒重置 | 不依赖定时器，在每次预扣事务内检测窗口是否过期并就地清零 |
+| WindowKind | 标识哪一层窗口，取值 `total / weekly / five_hour` |
+
+## 5. 用户故事
+
+1. **管理员配置套餐**：在 plan 编辑表单填写 `5 小时窗口限额` 和 `7 天窗口限额`（任一为 0 表示该层不启用）。
+2. **用户购买套餐**：购买时把 plan 上的两层限额拍照式快照到 `UserSubscription`，订阅卡片上展示三条进度条。
+3. **用户连续请求**：首请求开 5h 窗口和周窗口；窗口内累计用量到 `FiveHourLimit` 后，下一次请求被拒，错误消息说明"5 小时限额已用尽，下次重置时间 X"。
+4. **窗口过期**：5h 后用户再发请求，系统自动开新 5h 窗口（用量归零）。
+5. **管理员介入**：用户因业务需要紧急排障，管理员从 admin 后台点击"重置 5h 窗口"按钮，立即放行。
+
+## 6. 架构
+
+```
+controller/subscription.go              ← 已有：plan CRUD；新增 admin 重置窗口入口
+model/subscription.go                   ← 已有：订阅 CRUD、PreConsume 事务（仅做协调）
+model/subscription_admin.go (新增)      ← 把 admin 函数从 subscription.go 迁出，并新增重置窗口能力
+model/subscription_window.go (新增)     ← 窗口策略纯函数（核心）
+service/funding_source.go               ← 透传 SubscriptionWindowError
+service/subscription_reset_task.go      ← 不变（套餐周期重置任务）
+web/default/src/features/subscriptions/ ← 表单与展示
+web/default/src/features/wallet/        ← 用户订阅卡片三条进度条
+```
+
+### 6.1 核心抽象：`subscription_window.go`
+
+只暴露纯函数 + 一组类型，不接 `*gorm.DB`，便于在不启动 DB 的情况下覆盖大量边界用例：
+
+```go
+type WindowKind string
+
+const (
+    WindowKindTotal    WindowKind = "total"
+    WindowKindWeekly   WindowKind = "weekly"
+    WindowKindFiveHour WindowKind = "five_hour"
+)
+
+type WindowEvalResult struct {
+    Allow     bool
+    BlockedBy WindowKind   // Allow=false 时填
+    NextReset int64        // BlockedBy 对应窗口的下一次重置时刻；total 层填 0
+    Resets    []WindowKind // 本次评估中需要执行的"懒重置"窗口列表
+}
+
+func EvaluateConsume(sub *UserSubscription, plan *SubscriptionPlan, amount, now int64) WindowEvalResult
+func ApplyConsume(sub *UserSubscription, result WindowEvalResult, amount, now int64)
+// ApplyDelta：事后调整（Settle 补扣 / 退款 / 全量 refund）。delta 正=补扣，负=退还。
+// 不重新开窗、不重置；窗口已过期的层不动。
+func ApplyDelta(sub *UserSubscription, delta, now int64)
+```
+
+### 6.2 PreConsume 工作流
+
+```
+开始事务
+  SELECT ... FOR UPDATE 拿到 []sub
+  for each sub by end_time asc:
+    plan := getPlan(sub.PlanId)
+    maybeResetUserSubscriptionWithPlanTx(...)  // 现有"套餐周期重置"
+    res := EvaluateConsume(sub, plan, amount, now)
+    if !res.Allow {
+        记录该 sub 最严重的 BlockedBy；继续试下一条订阅
+    } else {
+        ApplyConsume(&sub, res, amount, now)
+        创建 SubscriptionPreConsumeRecord
+        Save sub
+        提交并返回成功
+    }
+  循环结束未命中 → 返回最严重的 SubscriptionWindowError
+提交事务
+```
+
+### 6.3 依赖单向
+
+`subscription_window.go` 只依赖 `model` 包内的 `UserSubscription`、`SubscriptionPlan` 与 `time`，不反向依赖 `service`/`controller`。
+
+### 6.4 顺手做的局部整理
+
+`subscription.go` 当前已 1207 行，且 admin 函数（`AdminBindSubscription` / `AdminInvalidateUserSubscription` / `AdminDeleteUserSubscription`）与 CRUD/事务函数混在一起。本 spec 在新增 `AdminResetUserSubscriptionWindow` 时，**一并把已有的 admin 函数迁到 `subscription_admin.go`**——只迁与 admin 入口相关的函数，不动 PreConsume / Refund / Reset 等运行时路径。这是"工作中顺手做的、有局部收益的整理"，不是无关重构。
+
+## 7. 数据模型
+
+### 7.1 `SubscriptionPlan` 新增字段
+
+```go
+type SubscriptionPlan struct {
+    // ... 现有字段不变 ...
+
+    // 5 小时滚动窗口限额（quota 单位，0 = 不启用此层）
+    FiveHourAmount int64 `json:"five_hour_amount" gorm:"type:bigint;not null;default:0"`
+
+    // 7 天滚动窗口限额（quota 单位，0 = 不启用此层）
+    WeeklyAmount int64 `json:"weekly_amount" gorm:"type:bigint;not null;default:0"`
+}
+```
+
+约束：
+- 0 = 该层不启用，与现有 `total_amount=0` 含义对齐（"0 视为不限"）。
+- 任意正值即视为该层启用。
+- 后端校验：`>= 0` 且 `<= 1e15`，与现有 `total_amount` 校验一致。
+- 不强制三层数值大小关系。
+
+### 7.2 `UserSubscription` 新增字段
+
+```go
+type UserSubscription struct {
+    // ... 现有字段不变 ...
+
+    // 5h 窗口
+    FiveHourLimit       int64 `json:"five_hour_limit" gorm:"type:bigint;not null;default:0"`
+    FiveHourUsed        int64 `json:"five_hour_used" gorm:"type:bigint;not null;default:0"`
+    FiveHourWindowStart int64 `json:"five_hour_window_start" gorm:"type:bigint;not null;default:0"`
+
+    // 7d 窗口
+    WeeklyLimit         int64 `json:"weekly_limit" gorm:"type:bigint;not null;default:0"`
+    WeeklyUsed          int64 `json:"weekly_used" gorm:"type:bigint;not null;default:0"`
+    WeeklyWindowStart   int64 `json:"weekly_window_start" gorm:"type:bigint;not null;default:0"`
+}
+```
+
+**关键决策：limit 拷贝快照而非每次读 plan**
+
+`CreateUserSubscriptionFromPlanTx` 在创建 `UserSubscription` 时把 plan 上的两层限额拷贝到本表的 `*Limit` 字段。理由：
+- 存量订阅维持原语义：plan 即便后续被改，已购订阅仍按购买时的限额执行。老订阅快照值是 0，自然就"不启用此层"。
+- 避免每次预扣都要重新读 plan 并应用最新值，造成"管理员调高 plan 限额、用户已购订阅突然额度变大"这种语义混乱。
+
+### 7.3 数据库迁移
+
+按 CLAUDE.md Rule 2，所有迁移必须在 SQLite/MySQL/PostgreSQL 三库通用：
+- `subscription_plans`、`user_subscriptions` 表均通过 GORM `AutoMigrate` 添加 `bigint NOT NULL DEFAULT 0` 字段。
+- 三库下 `ADD COLUMN bigint NOT NULL DEFAULT 0` 都是元数据级操作，不会触发全表重写。
+
+存量数据：所有新增字段默认 0；存量用户/已购订阅完全无副作用（5h/周窗口都不启用）。
+
+### 7.4 索引
+
+`UserSubscription` 现有索引足够，新增字段无需索引：
+- 窗口检测发生在已锁定的单行内（`FOR UPDATE` 走 PK）。
+- 没有"按窗口起点扫表"的查询；懒重置不需要定时器。
+
+## 8. 核心算法
+
+### 8.1 窗口"懒重置"判定
+
+对每一层滚动窗口（5h / 7d）独立判定：
+
+```
+limit = 该层快照值（FiveHourLimit / WeeklyLimit）
+若 limit == 0:
+    该层不启用，跳过
+windowSize = 5h（=18000s）or 7d（=604800s）
+
+若 sub.WindowStart == 0:
+    首次开窗：本次评估前需 reset（used 归零、起点设为 now）
+若 now >= sub.WindowStart + windowSize:
+    窗口已过期：本次评估前需 reset
+否则:
+    窗口仍有效，按现有 used 判定
+```
+
+### 8.2 `EvaluateConsume` 逻辑
+
+```
+remaining(limit, used) -> int64:
+    if limit == 0: return MaxInt64  // 该层未启用
+    return limit - used
+
+// 第一步：识别需要"懒重置"的滚动窗口
+resets := []
+for window in [fiveHour, weekly]:
+    若 limit > 0 且 (window_start == 0 或 now >= window_start + size):
+        resets += window
+        在内存中按"重置后状态"参与 remain 计算（不写回 sub）
+
+// 第二步：计算各层 remain，并判断是否容纳 amount
+按"不足量最严重"的优先级返回；优先级：total < weekly < fiveHour
+若任一 remain < amount:
+    Allow=false
+    BlockedBy = 该层
+    NextReset = 该层下一次重置时刻（total 层填 0 表示无自动重置）
+否则:
+    Allow=true, Resets=resets
+```
+
+为什么"不足量最严重的优先报"：用户更需要看到"哪一层卡死了我"。若 total 已耗尽，重置 5h 也没用，应优先告诉用户问题在 total。
+
+### 8.3 `ApplyConsume` 逻辑
+
+```
+对 result.Resets 中每个窗口:
+    sub.<window>Used = 0
+    sub.<window>WindowStart = now
+
+sub.AmountUsed += amount  // 始终
+若 FiveHourLimit > 0: sub.FiveHourUsed += amount
+若 WeeklyLimit > 0:   sub.WeeklyUsed += amount
+```
+
+未启用的层（limit=0）不写 `*_used`，保持 0，避免误更新。
+
+### 8.4 `ApplyDelta` 逻辑（Settle 补扣 / Settle 退还 / 全量退款）
+
+> 说明：所有"事后"调整（包括 `PostConsumeUserSubscriptionDelta` 的正负 delta、`RefundSubscriptionPreConsume` 内部的反扣）走同一条路径，统一为 `ApplyDelta`。这条路径**不评估限额、不重新开窗、不写 `*WindowStart`**。
+
+```
+sub.AmountUsed += delta（钳制到 ≥ 0）
+
+若 FiveHourLimit > 0 且 FiveHourWindowStart > 0 且 now < FiveHourWindowStart + 5h:
+    sub.FiveHourUsed += delta（钳制到 ≥ 0）
+否则:
+    什么也不做（窗口已过期或未开窗，不修改）
+
+weekly 层同理
+```
+
+为什么过期窗口不调整：窗口已经过去，反扣到一个旧窗口再被下次"懒重置"清零毫无意义；强行写入又会污染语义。直接不动是最安全的。
+
+为什么 Settle 正 delta 也走这里：Settle 的语义是"对已经预扣过的请求做差额结算"，请求当时已经通过 `EvaluateConsume` 校验过，不应该再次评估限额（否则会出现"预扣已过、Settle 时新窗口已开、补扣意外触发限额"的怪异情况）。让 Settle 永远是"在当前窗口内顺手累加"。
+
+### 8.5 调用链改动
+
+| 位置 | 改动 |
+|---|---|
+| `model.PreConsumeUserSubscription` | 加锁后调 `EvaluateConsume`，不通过则 `continue` 试下一条订阅；都不通过返回最严重的 `*SubscriptionWindowError`；通过则 `ApplyConsume` |
+| `model.PostConsumeUserSubscriptionDelta` | 改用 `ApplyDelta(sub, delta, now)` 调整 `AmountUsed` 与各层 `*Used`；不重新评估限额、不开新窗口 |
+| `model.RefundSubscriptionPreConsume` | 内部已调 `PostConsumeUserSubscriptionDelta`，无需直接改 |
+| `model.CreateUserSubscriptionFromPlanTx` | 创建时把 `plan.FiveHourAmount` → `sub.FiveHourLimit`、`plan.WeeklyAmount` → `sub.WeeklyLimit` 拷贝；`*_used`、`*_window_start` 全 0 |
+| `service.SubscriptionFunding` | 错误返回时透出 `*SubscriptionWindowError`，由上层渲染给用户 |
+
+### 8.6 错误结构
+
+```go
+var ErrSubscriptionWindowExceeded = errors.New("subscription window exceeded")
+
+type SubscriptionWindowError struct {
+    Kind      WindowKind   // total / weekly / five_hour
+    Limit     int64
+    Used      int64
+    NextReset int64        // unix；0 表示无自动重置（如 total 层）
+}
+
+func (e *SubscriptionWindowError) Error() string {
+    // 形如：subscription window exceeded: kind=five_hour, used=100000/100000, next_reset=1747920000
+    return fmt.Sprintf("subscription window exceeded: kind=%s, used=%d/%d, next_reset=%d",
+        e.Kind, e.Used, e.Limit, e.NextReset)
+}
+func (e *SubscriptionWindowError) Is(target error) bool { return target == ErrSubscriptionWindowExceeded }
+```
+
+业务方可以用 `errors.As` 拿到细节渲染响应（中英文消息均通过 i18n 取）。
+
+### 8.7 并发与一致性
+
+- 窗口判定 / 重置 / 扣减都在 `tx.Set("gorm:query_option", "FOR UPDATE")` 锁住单条 `UserSubscription` 之后做，与现有 `PreConsumeUserSubscription` 锁协议一致。
+- 多订阅场景：`PreConsume` 现有"按 end_time asc 选第一个能塞下的"逻辑保留。某条订阅的 5h 已满会跳过它去试下一条订阅；都试完才算彻底拒绝。
+- 退款 / Settle 不需重新评估窗口（不可能因 Settle 触发限额），直接 `ApplyDelta`。
+
+## 9. Admin / API / 前端 / I18n
+
+### 9.1 Plan 管理后端 API
+
+`controller/subscription.go` 中现有的 plan 创建/更新接口，复用 `formValuesToPlanPayload` 的请求体——后端直接读 `plan.FiveHourAmount` / `plan.WeeklyAmount` 字段即可。
+
+### 9.2 Admin 重置窗口 API（新增）
+
+`controller/subscription.go` 新增两个端点，鉴权走现有 admin 中间件：
+
+```
+POST /api/admin/user_subscriptions/:id/reset_five_hour_window
+POST /api/admin/user_subscriptions/:id/reset_weekly_window
+```
+
+实现：在 `model/subscription_admin.go` 新增
+
+```go
+func AdminResetUserSubscriptionWindow(userSubscriptionId int, kind WindowKind) error
+```
+
+事务内 `FOR UPDATE` 锁行 → 把对应的 `*Used=0` / `*WindowStart=0` → `RecordLog(LogTypeManage, ...)` 留审计。
+
+### 9.3 用户侧只读查询
+
+现有 `GetAllActiveUserSubscriptions` 返回 `UserSubscription` 全量字段，前端会自动拿到 `FiveHourLimit/Used/WindowStart` 等。新增字段对外可见，不需要额外的查询接口。
+
+### 9.4 错误响应结构
+
+`controller/relay` 把 `*SubscriptionWindowError` 透传到响应体：
+
+```json
+{
+  "error": {
+    "type": "subscription_window_exceeded",
+    "message": "5 小时限额已用尽，将于 2026-05-22 18:00 重置",
+    "subscription_block": {
+      "kind": "five_hour",
+      "limit": 100000,
+      "used": 100000,
+      "next_reset": 1747920000
+    }
+  }
+}
+```
+
+### 9.5 前端改动（`web/default`）
+
+只改下面四处，遵循 CLAUDE.md Rule 3 用 bun：
+
+**a) `src/features/subscriptions/lib/plan-form.ts`**
+- `getPlanFormSchema` 加 `five_hour_amount`、`weekly_amount`（`z.coerce.number().min(0)`）
+- `PLAN_FORM_DEFAULTS`、`planToFormValues`、`formValuesToPlanPayload` 同步加字段
+
+**b) `src/features/subscriptions/components/subscriptions-mutate-drawer.tsx`**（plan 编辑表单）
+- 在 `total_amount` 字段下方新增两个数字输入：`5 小时窗口限额`、`7 天窗口限额`
+- 提示文案："0 表示不启用此层"
+
+**c) 用户侧订阅卡片（`src/features/wallet/components/subscription-plans-card.tsx`）**
+- 在订阅卡片上新增三个 progress bar：周期总额 / 周用量 / 5h 用量
+- 每条进度条下显示 "X / Y · 重置于 Z"
+- 当 `*_limit == 0` 不渲染该层
+
+**d) Admin 用户订阅详情对话框（`subscriptions-dialogs.tsx`）**
+- 新增"重置 5h 窗口"、"重置周窗口"两个按钮，确认后调上面新增的 admin API
+
+`web/classic` 旧前端按"渐进维护"原则不动。
+
+### 9.6 国际化
+
+按 CLAUDE.md i18n 章节：
+
+- 后端 (`i18n/`)：新增三条 key——`subscription_window_exceeded_five_hour`、`subscription_window_exceeded_weekly`、`subscription_window_exceeded_total`，en/zh 两份。
+- 前端 (`web/default/src/i18n/locales/`)：表单 label / 进度条 / 提示文案以英文 key 写在组件中；`bun run i18n:sync` 后 zh.json 等自动同步缺失 key；重置时间格式化沿用现有 dayjs / Intl 工具。
+
+### 9.7 日志与审计
+
+`PreConsume` 拒绝时，沿用现有 `RecordLog`：写一条 `LogTypeManage` 类型，内容如：
+
+```
+订阅 5 小时限额已用尽：plan=Dev/$100，used=100000/100000，next_reset=2026-05-22 18:00
+```
+
+帮助运营定位"这位用户为何被拦截"。**这条日志写在 PreConsume 事务外**（事务内只做扣减），避免日志写失败影响业务。
+
+## 10. 测试策略
+
+### 10.1 单元测试（核心层）
+
+新建 `model/subscription_window_test.go`，**纯函数测试，不依赖 DB**：
+
+| 用例 | 目的 |
+|---|---|
+| `Evaluate_AllLimitsZero_AllowsAlways` | 三层都 0（含老订阅） → 永远 Allow |
+| `Evaluate_TotalExhausted_BlocksTotal` | total 用尽 → BlockedBy=total，NextReset=0 |
+| `Evaluate_FiveHourFresh_OpensWindow` | 首次预扣，window_start=0 → Resets=[five_hour]，Allow=true |
+| `Evaluate_FiveHourExpired_AutoResets` | now ≥ start+5h → Resets=[five_hour]，Used 视为 0 |
+| `Evaluate_FiveHourActive_Blocks` | 窗口内已用满 → BlockedBy=five_hour，NextReset=start+5h |
+| `Evaluate_WeeklyAndFiveHourBothBlock_PrefersTotal` / `PrefersWeekly` | 多层同时不足 → 按 total < weekly < fiveHour 优先级返回 |
+| `Evaluate_AmountExceedsLimit` | amount 单次超限 → BlockedBy 为该层 |
+| `Apply_ResetsThenIncrements` | ApplyConsume 先重置再加 used |
+| `Apply_DisabledLayerNotTouched` | weekly_limit=0 时不写 weekly_used |
+| `Refund_WithinWindow_Decreases` | 退款落到当前窗口 → used 减少且不为负 |
+| `Refund_ExpiredWindow_NoOp` | 退款时窗口已过期 → 不修改任何 used |
+| `Refund_ClampsToZero` | 反扣超过当前 used → 钳制到 0 |
+
+### 10.2 集成测试（事务层）
+
+新建 `model/subscription_preconsume_test.go`，使用现有 SQLite test fixture：
+
+| 用例 | 目的 |
+|---|---|
+| `PreConsume_NewSub_OpensFiveHourAndWeekly` | 新订阅首次扣减，三个 window_start 正确写入 |
+| `PreConsume_BlockedByFiveHour_ReturnsWindowError` | 验证 `errors.As(&SubscriptionWindowError{})` 可解包，字段正确 |
+| `PreConsume_BlockedSubFallbackToNext` | 用户有两条订阅，A 的 5h 满 → 跳到 B 成功扣减 |
+| `PreConsume_RefundDoesNotResetWindow` | 退款不应改 window_start |
+| `PreConsume_Idempotent_SameRequestId` | 同一 requestId 二次调用不重复扣 |
+| `Migration_OldSubsHaveZeroLimits` | 模拟老数据（仅 amount_total）→ 行为与重构前一致 |
+
+### 10.3 服务层与计费会话
+
+`service/billing_session.go` 现有 `SubscriptionFunding.PreConsume` 行为路径，需补：
+- 错误透传：`PreConsume` 返回 `*SubscriptionWindowError` 时不应被吞为通用 error，要保留类型供 controller 渲染
+- 在 `service/billing_session_test.go` 加一个用例覆盖该路径
+
+### 10.4 前端
+
+不写自动化测试（与项目其它前端模块保持一致）。按 CLAUDE.md "UI changes" 要求人工验证：
+- `bun run dev` 启动 default 主题
+- 创建一个带 5h/周限额的 plan，购买，连续请求触发 5h 拦截，观察错误提示与 UI 进度条
+- 测 admin 重置按钮：拦截后点重置 → 立即可用
+
+### 10.5 回归保护
+
+最关键的回归点：**老用户 / 老套餐（plan 中两个新字段都是 0）行为完全不变**。在集成测试中显式用 fixture 写入 `five_hour_amount=0, weekly_amount=0` 的 plan 和老订阅，断言 PreConsume 行为与改造前一致。
+
+### 10.6 性能
+
+- 三层判定都是 O(1) 读字段 + 几个加减；事务结构与改造前完全相同（同一行 `FOR UPDATE`，不引入新查询）。
+- 不需要专门的 benchmark；Migration 在大表上跑 `ALTER TABLE ADD COLUMN bigint NOT NULL DEFAULT 0`，三库都是元数据操作。
+
+## 11. 部署 / 兼容性
+
+- **零停机部署**：先发布新版二进制（带迁移），AutoMigrate 加列；现有运行中订阅 `*_limit/*_used/*_window_start` 全 0，业务行为与上线前一致。
+- **回滚**：旧二进制忽略新列即可，不影响数据完整性。
+- **多节点**：定时任务仍由 `IsMasterNode` 节点跑，与现状一致；窗口重置是懒重置，本身不需多节点协调。
+
+## 12. 风险与未决事项
+
+- 三层并存对用户的"心智模型"较重；前端必须把三条进度条 + 重置时间显式展示，否则用户会困惑"为什么我还有总额却被拦截了"。
+- `PreConsume` 在多订阅场景下"按 end_time asc 试下一条"的语义保留；当用户有两条同时活跃的订阅、其一 5h 满时会自动用另一条扣减——这是已存在行为，本 spec 不修改。
+- 单 `amount` 一次超出 5h 限额时直接拒绝，不做"切片预扣"。
+
+## 13. 完成判据
+
+1. 后端单测 / 集成测试全绿。
+2. SQLite/MySQL/PostgreSQL 三库 AutoMigrate 均成功。
+3. 在 `bun run dev` 下手动验证：plan 编辑表单、订阅卡片三条进度条、5h 拦截、admin 重置按钮可用。
+4. 老套餐 / 老订阅行为零变化（集成测试 + 人工验证一条 0/0 plan 路径）。
+
+
