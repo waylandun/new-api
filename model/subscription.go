@@ -1216,7 +1216,9 @@ func GetSubscriptionPlanInfoByUserSubscriptionId(userSubscriptionId int) (*Subsc
 	return info, nil
 }
 
-// Update subscription used amount by delta (positive consume more, negative refund).
+// PostConsumeUserSubscriptionDelta updates subscription used amounts by delta
+// (positive = consume more, negative = refund). Adjusts all three layers via ApplyDelta;
+// rolling windows that have expired or are unopened are left untouched.
 func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error {
 	if userSubscriptionId <= 0 {
 		return errors.New("invalid userSubscriptionId")
@@ -1224,6 +1226,7 @@ func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error
 	if delta == 0 {
 		return nil
 	}
+	now := GetDBTimestamp()
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var sub UserSubscription
 		if err := tx.Set("gorm:query_option", "FOR UPDATE").
@@ -1231,14 +1234,11 @@ func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error
 			First(&sub).Error; err != nil {
 			return err
 		}
-		newUsed := sub.AmountUsed + delta
-		if newUsed < 0 {
-			newUsed = 0
+		if sub.AmountTotal > 0 && sub.AmountUsed+delta > sub.AmountTotal {
+			return fmt.Errorf("subscription used exceeds total, used=%d total=%d",
+				sub.AmountUsed+delta, sub.AmountTotal)
 		}
-		if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
-			return fmt.Errorf("subscription used exceeds total, used=%d total=%d", newUsed, sub.AmountTotal)
-		}
-		sub.AmountUsed = newUsed
+		ApplyDelta(&sub, delta, now)
 		return tx.Save(&sub).Error
 	})
 }
