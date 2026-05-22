@@ -52,6 +52,8 @@ import {
   createUserSubscription,
   invalidateUserSubscription,
   deleteUserSubscription,
+  resetUserSubscriptionFiveHourWindow,
+  resetUserSubscriptionWeeklyWindow,
 } from '../../api'
 import { formatTimestamp } from '../../lib'
 import type { PlanRecord, UserSubscriptionRecord } from '../../types'
@@ -104,7 +106,7 @@ export function UserSubscriptionsDialog(props: Props) {
   const [subs, setSubs] = useState<UserSubscriptionRecord[]>([])
   const [selectedPlanId, setSelectedPlanId] = useState<string>('')
   const [confirmAction, setConfirmAction] = useState<{
-    type: 'invalidate' | 'delete'
+    type: 'invalidate' | 'delete' | 'reset_five_hour' | 'reset_weekly'
     subId: number
   } | null>(null)
 
@@ -166,19 +168,42 @@ export function UserSubscriptionsDialog(props: Props) {
   const handleConfirmAction = async () => {
     if (!confirmAction) return
     try {
-      if (confirmAction.type === 'invalidate') {
-        const res = await invalidateUserSubscription(confirmAction.subId)
-        if (res.success) {
-          toast.success(res.data?.message || t('Has been invalidated'))
-          await loadData()
-          props.onSuccess?.()
+      switch (confirmAction.type) {
+        case 'invalidate': {
+          const res = await invalidateUserSubscription(confirmAction.subId)
+          if (res.success) {
+            toast.success(res.data?.message || t('Has been invalidated'))
+            await loadData()
+            props.onSuccess?.()
+          }
+          break
         }
-      } else {
-        const res = await deleteUserSubscription(confirmAction.subId)
-        if (res.success) {
-          toast.success(t('Deleted'))
-          await loadData()
-          props.onSuccess?.()
+        case 'delete': {
+          const res = await deleteUserSubscription(confirmAction.subId)
+          if (res.success) {
+            toast.success(t('Deleted'))
+            await loadData()
+            props.onSuccess?.()
+          }
+          break
+        }
+        case 'reset_five_hour': {
+          const res = await resetUserSubscriptionFiveHourWindow(confirmAction.subId)
+          if (res.success) {
+            toast.success(res.data?.message || t('5-hour window reset'))
+            await loadData()
+            props.onSuccess?.()
+          }
+          break
+        }
+        case 'reset_weekly': {
+          const res = await resetUserSubscriptionWeeklyWindow(confirmAction.subId)
+          if (res.success) {
+            toast.success(res.data?.message || t('Weekly window reset'))
+            await loadData()
+            props.onSuccess?.()
+          }
+          break
         }
       }
     } catch {
@@ -308,7 +333,33 @@ export function UserSubscriptionsDialog(props: Props) {
                             {total > 0 ? `${used}/${total}` : t('Unlimited')}
                           </TableCell>
                           <TableCell className='text-right'>
-                            <div className='flex justify-end gap-1'>
+                            <div className='flex flex-wrap justify-end gap-1'>
+                              <Button
+                                size='sm'
+                                variant='outline'
+                                disabled={!isActive}
+                                onClick={() =>
+                                  setConfirmAction({
+                                    type: 'reset_five_hour',
+                                    subId: sub.id,
+                                  })
+                                }
+                              >
+                                {t('Reset 5h')}
+                              </Button>
+                              <Button
+                                size='sm'
+                                variant='outline'
+                                disabled={!isActive}
+                                onClick={() =>
+                                  setConfirmAction({
+                                    type: 'reset_weekly',
+                                    subId: sub.id,
+                                  })
+                                }
+                              >
+                                {t('Reset weekly')}
+                              </Button>
                               <Button
                                 size='sm'
                                 variant='outline'
@@ -354,16 +405,28 @@ export function UserSubscriptionsDialog(props: Props) {
           title={
             confirmAction.type === 'invalidate'
               ? t('Confirm invalidate')
-              : t('Confirm delete')
+              : confirmAction.type === 'delete'
+                ? t('Confirm delete')
+                : confirmAction.type === 'reset_five_hour'
+                  ? t('Reset 5-hour window?')
+                  : t('Reset weekly window?')
           }
           desc={
             confirmAction.type === 'invalidate'
               ? t(
                   'After invalidating, this subscription will be immediately deactivated. Historical records are not affected. Continue?'
                 )
-              : t(
-                  'Deleting will permanently remove this subscription record (including benefit details). Continue?'
-                )
+              : confirmAction.type === 'delete'
+                ? t(
+                    'Deleting will permanently remove this subscription record (including benefit details). Continue?'
+                  )
+                : confirmAction.type === 'reset_five_hour'
+                  ? t(
+                      'This will clear the 5-hour window usage and start a new window on the next request.'
+                    )
+                  : t(
+                      'This will clear the weekly window usage and start a new window on the next request.'
+                    )
           }
           handleConfirm={handleConfirmAction}
           destructive={confirmAction.type === 'delete'}

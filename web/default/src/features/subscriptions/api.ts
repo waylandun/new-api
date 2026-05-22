@@ -104,6 +104,24 @@ export async function deleteUserSubscription(
   return res.data
 }
 
+export async function resetUserSubscriptionFiveHourWindow(
+  subId: number
+): Promise<ApiResponse<{ message?: string }>> {
+  const res = await api.post(
+    `/api/subscription/admin/user_subscriptions/${subId}/reset_five_hour_window`
+  )
+  return res.data
+}
+
+export async function resetUserSubscriptionWeeklyWindow(
+  subId: number
+): Promise<ApiResponse<{ message?: string }>> {
+  const res = await api.post(
+    `/api/subscription/admin/user_subscriptions/${subId}/reset_weekly_window`
+  )
+  return res.data
+}
+
 // ============================================================================
 // User-facing Subscription Payment
 // ============================================================================
