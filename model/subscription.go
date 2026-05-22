@@ -175,6 +175,12 @@ type SubscriptionPlan struct {
 	QuotaResetPeriod        string `json:"quota_reset_period" gorm:"type:varchar(16);default:'never'"`
 	QuotaResetCustomSeconds int64  `json:"quota_reset_custom_seconds" gorm:"type:bigint;default:0"`
 
+	// 5h 滚动窗口限额（quota 单位，0 = 不启用此层）
+	FiveHourAmount int64 `json:"five_hour_amount" gorm:"type:bigint;not null;default:0"`
+
+	// 7d 滚动窗口限额（quota 单位，0 = 不启用此层）
+	WeeklyAmount int64 `json:"weekly_amount" gorm:"type:bigint;not null;default:0"`
+
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
 }
@@ -250,6 +256,16 @@ type UserSubscription struct {
 
 	UpgradeGroup  string `json:"upgrade_group" gorm:"type:varchar(64);default:''"`
 	PrevUserGroup string `json:"prev_user_group" gorm:"type:varchar(64);default:''"`
+
+	// 5h 窗口（购买时从 plan.FiveHourAmount 拷贝；0 = 该层不启用）
+	FiveHourLimit       int64 `json:"five_hour_limit" gorm:"type:bigint;not null;default:0"`
+	FiveHourUsed        int64 `json:"five_hour_used" gorm:"type:bigint;not null;default:0"`
+	FiveHourWindowStart int64 `json:"five_hour_window_start" gorm:"type:bigint;not null;default:0"`
+
+	// 7d 窗口
+	WeeklyLimit       int64 `json:"weekly_limit" gorm:"type:bigint;not null;default:0"`
+	WeeklyUsed        int64 `json:"weekly_used" gorm:"type:bigint;not null;default:0"`
+	WeeklyWindowStart int64 `json:"weekly_window_start" gorm:"type:bigint;not null;default:0"`
 
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
