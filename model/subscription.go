@@ -503,6 +503,8 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		UserId:        userId,
 		PlanId:        plan.Id,
 		AmountTotal:   plan.TotalAmount,
+		FiveHourLimit: plan.FiveHourAmount,
+		WeeklyLimit:   plan.WeeklyAmount,
 		AmountUsed:    0,
 		StartTime:     now.Unix(),
 		EndTime:       endUnix,
