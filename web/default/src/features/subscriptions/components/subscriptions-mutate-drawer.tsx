@@ -62,6 +62,7 @@ import {
 } from '../lib'
 import type { PlanRecord } from '../types'
 import { useSubscriptions } from './subscriptions-provider'
+import { formatQuota } from '@/lib/format'
 
 interface Props {
   open: boolean
@@ -240,7 +241,7 @@ export function SubscriptionsMutateDrawer({
                         />
                       </FormControl>
                       <FormDescription>
-                        {t('0 means unlimited')}
+                        {field.value > 0 ? `≈ ${formatQuota(Number(field.value))} · ` : ''}{t('0 means unlimited')}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
@@ -266,7 +267,7 @@ export function SubscriptionsMutateDrawer({
                         />
                       </FormControl>
                       <FormDescription>
-                        {t('0 disables this layer')}
+                        {field.value > 0 ? `≈ ${formatQuota(Number(field.value))} · ` : ''}{t('0 disables this layer')}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
@@ -290,7 +291,7 @@ export function SubscriptionsMutateDrawer({
                         />
                       </FormControl>
                       <FormDescription>
-                        {t('0 disables this layer')}
+                        {field.value > 0 ? `≈ ${formatQuota(Number(field.value))} · ` : ''}{t('0 disables this layer')}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
