@@ -1113,6 +1113,7 @@ func RefundSubscriptionPreConsume(requestId string) error {
 	if strings.TrimSpace(requestId) == "" {
 		return errors.New("requestId is empty")
 	}
+	now := GetDBTimestamp()
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var record SubscriptionPreConsumeRecord
 		if err := tx.Set("gorm:query_option", "FOR UPDATE").
@@ -1126,7 +1127,7 @@ func RefundSubscriptionPreConsume(requestId string) error {
 			record.Status = "refunded"
 			return tx.Save(&record).Error
 		}
-		if err := PostConsumeUserSubscriptionDelta(record.UserSubscriptionId, -record.PreConsumed); err != nil {
+		if err := postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, -record.PreConsumed, now); err != nil {
 			return err
 		}
 		record.Status = "refunded"
@@ -1228,17 +1229,24 @@ func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error
 	}
 	now := GetDBTimestamp()
 	return DB.Transaction(func(tx *gorm.DB) error {
-		var sub UserSubscription
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").
-			Where("id = ?", userSubscriptionId).
-			First(&sub).Error; err != nil {
-			return err
-		}
-		if sub.AmountTotal > 0 && sub.AmountUsed+delta > sub.AmountTotal {
-			return fmt.Errorf("subscription used exceeds total, used=%d total=%d",
-				sub.AmountUsed+delta, sub.AmountTotal)
-		}
-		ApplyDelta(&sub, delta, now)
-		return tx.Save(&sub).Error
+		return postConsumeUserSubscriptionDeltaTx(tx, userSubscriptionId, delta, now)
 	})
+}
+
+// postConsumeUserSubscriptionDeltaTx applies a quota delta within an existing transaction.
+// Callers must pass the transaction db handle and a pre-fetched timestamp to avoid
+// acquiring a new connection from the pool (which would deadlock on single-connection SQLite).
+func postConsumeUserSubscriptionDeltaTx(tx *gorm.DB, userSubscriptionId int, delta int64, now int64) error {
+	var sub UserSubscription
+	if err := tx.Set("gorm:query_option", "FOR UPDATE").
+		Where("id = ?", userSubscriptionId).
+		First(&sub).Error; err != nil {
+		return err
+	}
+	if sub.AmountTotal > 0 && sub.AmountUsed+delta > sub.AmountTotal {
+		return fmt.Errorf("subscription used exceeds total, used=%d total=%d",
+			sub.AmountUsed+delta, sub.AmountTotal)
+	}
+	ApplyDelta(&sub, delta, now)
+	return tx.Save(&sub).Error
 }
