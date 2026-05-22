@@ -1031,6 +1031,7 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		if len(subs) == 0 {
 			return errors.New("no active subscription")
 		}
+		var lastErr *SubscriptionWindowError
 		for _, candidate := range subs {
 			sub := candidate
 			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
@@ -1040,13 +1041,27 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 			if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
 				return err
 			}
-			usedBefore := sub.AmountUsed
-			if sub.AmountTotal > 0 {
-				remain := sub.AmountTotal - usedBefore
-				if remain < amount {
-					continue
+
+			eval := EvaluateConsume(&sub, plan, amount, now)
+			if !eval.Allow {
+				switch eval.BlockedBy {
+				case WindowKindTotal:
+					lastErr = &SubscriptionWindowError{
+						Kind: WindowKindTotal, Limit: sub.AmountTotal, Used: sub.AmountUsed, NextReset: 0,
+					}
+				case WindowKindWeekly:
+					lastErr = &SubscriptionWindowError{
+						Kind: WindowKindWeekly, Limit: sub.WeeklyLimit, Used: sub.WeeklyUsed, NextReset: eval.NextReset,
+					}
+				case WindowKindFiveHour:
+					lastErr = &SubscriptionWindowError{
+						Kind: WindowKindFiveHour, Limit: sub.FiveHourLimit, Used: sub.FiveHourUsed, NextReset: eval.NextReset,
+					}
 				}
+				continue
 			}
+
+			usedBefore := sub.AmountUsed
 			record := &SubscriptionPreConsumeRecord{
 				RequestId:          requestId,
 				UserId:             userId,
@@ -1069,7 +1084,8 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 				}
 				return err
 			}
-			sub.AmountUsed += amount
+
+			ApplyConsume(&sub, eval, amount, now)
 			if err := tx.Save(&sub).Error; err != nil {
 				return err
 			}
@@ -1079,6 +1095,10 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 			returnValue.AmountUsedBefore = usedBefore
 			returnValue.AmountUsedAfter = sub.AmountUsed
 			return nil
+		}
+
+		if lastErr != nil {
+			return lastErr
 		}
 		return fmt.Errorf("subscription quota insufficient, need=%d", amount)
 	})
