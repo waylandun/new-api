@@ -407,3 +407,41 @@ func AdminDeleteUserSubscription(c *gin.Context) {
 	}
 	common.ApiSuccess(c, nil)
 }
+
+// AdminResetUserSubscriptionFiveHourWindow resets the 5h rolling window of a user subscription.
+func AdminResetUserSubscriptionFiveHourWindow(c *gin.Context) {
+	subId, _ := strconv.Atoi(c.Param("id"))
+	if subId <= 0 {
+		common.ApiErrorMsg(c, "无效的订阅ID")
+		return
+	}
+	msg, err := model.AdminResetUserSubscriptionWindow(subId, model.WindowKindFiveHour)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if msg != "" {
+		common.ApiSuccess(c, gin.H{"message": msg})
+		return
+	}
+	common.ApiSuccess(c, nil)
+}
+
+// AdminResetUserSubscriptionWeeklyWindow resets the 7d rolling window of a user subscription.
+func AdminResetUserSubscriptionWeeklyWindow(c *gin.Context) {
+	subId, _ := strconv.Atoi(c.Param("id"))
+	if subId <= 0 {
+		common.ApiErrorMsg(c, "无效的订阅ID")
+		return
+	}
+	msg, err := model.AdminResetUserSubscriptionWindow(subId, model.WindowKindWeekly)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if msg != "" {
+		common.ApiSuccess(c, gin.H{"message": msg})
+		return
+	}
+	common.ApiSuccess(c, nil)
+}
