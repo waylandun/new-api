@@ -88,6 +88,31 @@ function getBillingPreferenceLabel(
   }
 }
 
+function WindowBar(props: {
+  label: string
+  used: number
+  limit: number
+  resetAt?: number // unix seconds; 0/undefined → no reset hint
+  resetLabel: string // localized "Resets at" string
+}) {
+  if (props.limit <= 0) return null
+  const pct = Math.min(100, Math.round((props.used / props.limit) * 100))
+  return (
+    <div className='mt-2'>
+      <div className='text-muted-foreground flex items-center justify-between text-xs'>
+        <span>{props.label}</span>
+        <span>
+          {props.used.toLocaleString()} / {props.limit.toLocaleString()}
+          {props.resetAt
+            ? ` · ${props.resetLabel} ${new Date(props.resetAt * 1000).toLocaleString()}`
+            : ''}
+        </span>
+      </div>
+      <Progress value={pct} className='mt-1 h-1.5' />
+    </div>
+  )
+}
+
 export function SubscriptionPlansCard({
   topupInfo,
   onAvailabilityChange,
@@ -394,6 +419,24 @@ export function SubscriptionPlansCard({
                   const usedAmount = Number(subscription?.amount_used || 0)
                   const remainAmount =
                     totalAmount > 0 ? Math.max(0, totalAmount - usedAmount) : 0
+                  const fiveHourLimit = Number(subscription?.five_hour_limit || 0)
+                  const fiveHourUsed = Number(subscription?.five_hour_used || 0)
+                  const fiveHourWindowStart = Number(
+                    subscription?.five_hour_window_start || 0
+                  )
+                  const fiveHourResetAt =
+                    fiveHourWindowStart > 0
+                      ? fiveHourWindowStart + 5 * 60 * 60
+                      : 0
+                  const weeklyLimit = Number(subscription?.weekly_limit || 0)
+                  const weeklyUsed = Number(subscription?.weekly_used || 0)
+                  const weeklyWindowStart = Number(
+                    subscription?.weekly_window_start || 0
+                  )
+                  const weeklyResetAt =
+                    weeklyWindowStart > 0
+                      ? weeklyWindowStart + 7 * 24 * 60 * 60
+                      : 0
                   const planTitle =
                     planTitleMap.get(subscription?.plan_id) || ''
                   const remainDays = getRemainingDays(sub)
@@ -487,8 +530,29 @@ export function SubscriptionPlansCard({
                           </span>
                         )}
                       </div>
-                      {totalAmount > 0 && isActive && (
-                        <Progress value={usagePercent} className='mt-2 h-1.5' />
+                      {isActive && (
+                        <>
+                          {totalAmount > 0 && (
+                            <Progress
+                              value={usagePercent}
+                              className='mt-2 h-1.5'
+                            />
+                          )}
+                          <WindowBar
+                            label={t('Weekly window')}
+                            used={weeklyUsed}
+                            limit={weeklyLimit}
+                            resetAt={weeklyResetAt}
+                            resetLabel={t('Resets at')}
+                          />
+                          <WindowBar
+                            label={t('5-hour window')}
+                            used={fiveHourUsed}
+                            limit={fiveHourLimit}
+                            resetAt={fiveHourResetAt}
+                            resetLabel={t('Resets at')}
+                          />
+                        </>
                       )}
                     </div>
                   )
