@@ -7,6 +7,10 @@ DEV_BACKEND_SERVICE = new-api
 DEV_POSTGRES_DB = new-api
 DEV_POSTGRES_USER = root
 DEV_SQLITE_PATH ?= one-api.db
+LOCAL_GO_CACHE = $(CURDIR)/.cache/go-build
+LOCAL_BUN_TMP = $(CURDIR)/.cache/bun-tmp
+LOCAL_BUN_CACHE = $(CURDIR)/.cache/bun-install
+GO_PROXY ?= https://goproxy.cn,direct
 
 .PHONY: all build-frontend build-frontend-classic build-all-frontends start-backend dev dev-api dev-api-rebuild dev-web dev-web-classic reset-setup
 
@@ -14,17 +18,20 @@ all: build-all-frontends start-backend
 
 build-frontend:
 	@echo "Building default frontend..."
-	@cd $(FRONTEND_DIR) && bun install && DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$(cat ../../VERSION) bun run build
+	@mkdir -p $(LOCAL_BUN_TMP) $(LOCAL_BUN_CACHE)
+	@cd $(FRONTEND_DIR) && TMPDIR=$(LOCAL_BUN_TMP) BUN_INSTALL_CACHE_DIR=$(LOCAL_BUN_CACHE) NODE_TLS_REJECT_UNAUTHORIZED=0 bun install && DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$$(cat ../../VERSION) bun run build
 
 build-frontend-classic:
 	@echo "Building classic frontend..."
-	@cd $(FRONTEND_CLASSIC_DIR) && bun install && VITE_REACT_APP_VERSION=$(cat ../../VERSION) bun run build
+	@mkdir -p $(LOCAL_BUN_TMP) $(LOCAL_BUN_CACHE)
+	@cd $(FRONTEND_CLASSIC_DIR) && TMPDIR=$(LOCAL_BUN_TMP) BUN_INSTALL_CACHE_DIR=$(LOCAL_BUN_CACHE) NODE_TLS_REJECT_UNAUTHORIZED=0 bun install && VITE_REACT_APP_VERSION=$$(cat ../../VERSION) bun run build
 
 build-all-frontends: build-frontend build-frontend-classic
 
 start-backend:
 	@echo "Starting backend dev server..."
-	@cd $(BACKEND_DIR) && go run main.go &
+	@mkdir -p $(LOCAL_GO_CACHE)
+	@cd $(BACKEND_DIR) && GOCACHE=$(LOCAL_GO_CACHE) GOPROXY=$(GO_PROXY) go run main.go &
 
 dev-api:
 	@echo "Starting backend services (docker)..."
@@ -36,11 +43,13 @@ dev-api-rebuild:
 
 dev-web:
 	@echo "Starting frontend dev server..."
-	@cd $(FRONTEND_DIR) && bun install && bun run dev
+	@mkdir -p $(LOCAL_BUN_TMP) $(LOCAL_BUN_CACHE)
+	@cd $(FRONTEND_DIR) && TMPDIR=$(LOCAL_BUN_TMP) BUN_INSTALL_CACHE_DIR=$(LOCAL_BUN_CACHE) NODE_TLS_REJECT_UNAUTHORIZED=0 bun install && bun run dev
 
 dev-web-classic:
 	@echo "Starting classic frontend dev server..."
-	@cd $(FRONTEND_CLASSIC_DIR) && bun install && bun run dev
+	@mkdir -p $(LOCAL_BUN_TMP) $(LOCAL_BUN_CACHE)
+	@cd $(FRONTEND_CLASSIC_DIR) && TMPDIR=$(LOCAL_BUN_TMP) BUN_INSTALL_CACHE_DIR=$(LOCAL_BUN_CACHE) NODE_TLS_REJECT_UNAUTHORIZED=0 bun install && bun run dev
 
 dev: dev-api dev-web
 
