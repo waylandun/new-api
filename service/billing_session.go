@@ -219,13 +219,7 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		// Window-exhausted: build a localized message and surface as 403.
 		var winErr *model.SubscriptionWindowError
 		if errors.As(err, &winErr) {
-			return types.NewErrorWithStatusCode(
-				errors.New(formatSubscriptionWindowMessage(s.relayInfo.UserId, winErr)),
-				types.ErrorCodeInsufficientUserQuota,
-				http.StatusForbidden,
-				types.ErrOptionWithSkipRetry(),
-				types.ErrOptionWithNoRecordErrorLog(),
-			)
+			return newSubscriptionWindowAPIError(s.relayInfo.UserId, winErr)
 		}
 		// Legacy "no active subscription" / "subscription quota insufficient" path retained for non-window failures.
 		errMsg := err.Error()
@@ -241,6 +235,28 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 	s.syncRelayInfo()
 
 	return nil
+}
+
+func newSubscriptionWindowAPIError(userId int, e *model.SubscriptionWindowError) *types.NewAPIError {
+	message := formatSubscriptionWindowMessage(userId, e)
+	return types.WithOpenAIError(
+		types.OpenAIError{
+			Message: message,
+			Type:    "subscription_window_exceeded",
+			Code:    types.ErrorCodeInsufficientUserQuota,
+			SubscriptionBlock: &types.SubscriptionWindowBlock{
+				Kind:      string(e.Kind),
+				Limit:     e.Limit,
+				Used:      e.Used,
+				Remaining: e.Remaining,
+				Required:  e.Required,
+				NextReset: e.NextReset,
+			},
+		},
+		http.StatusForbidden,
+		types.ErrOptionWithSkipRetry(),
+		types.ErrOptionWithNoRecordErrorLog(),
+	)
 }
 
 // formatSubscriptionWindowMessage builds a localized message for SubscriptionWindowError.
@@ -262,9 +278,14 @@ func formatSubscriptionWindowMessage(userId int, e *model.SubscriptionWindowErro
 		resetTime = time.Unix(e.NextReset, 0).Format("2006-01-02 15:04")
 	}
 	args := map[string]any{
-		"Used":      e.Used,
-		"Limit":     e.Limit,
+		"Used":      logger.FormatQuota(int(e.Used)),
+		"Limit":     logger.FormatQuota(int(e.Limit)),
+		"Remaining": logger.FormatQuota(int(e.Remaining)),
+		"Required":  logger.FormatQuota(int(e.Required)),
 		"ResetTime": resetTime,
+	}
+	if err := i18n.Init(); err != nil {
+		return e.Error()
 	}
 	lang := i18nGetUserLang(userId)
 	return i18n.Translate(lang, key, args)
@@ -475,7 +496,14 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		session, apiErr := trySubscription()
 		if apiErr != nil {
 			if apiErr.GetErrorCode() == types.ErrorCodeInsufficientUserQuota {
-				return tryWallet()
+				walletSession, walletErr := tryWallet()
+				if walletErr != nil {
+					if walletErr.GetErrorCode() == types.ErrorCodeInsufficientUserQuota {
+						return nil, apiErr
+					}
+					return nil, walletErr
+				}
+				return walletSession, nil
 			}
 			return nil, apiErr
 		}

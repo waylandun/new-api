@@ -11,11 +11,21 @@ import (
 )
 
 type OpenAIError struct {
-	Message  string          `json:"message"`
-	Type     string          `json:"type"`
-	Param    string          `json:"param"`
-	Code     any             `json:"code"`
-	Metadata json.RawMessage `json:"metadata,omitempty"`
+	Message           string                   `json:"message"`
+	Type              string                   `json:"type"`
+	Param             string                   `json:"param"`
+	Code              any                      `json:"code"`
+	Metadata          json.RawMessage          `json:"metadata,omitempty"`
+	SubscriptionBlock *SubscriptionWindowBlock `json:"subscription_block,omitempty"`
+}
+
+type SubscriptionWindowBlock struct {
+	Kind      string `json:"kind"`
+	Limit     int64  `json:"limit"`
+	Used      int64  `json:"used"`
+	Remaining int64  `json:"remaining"`
+	Required  int64  `json:"required"`
+	NextReset int64  `json:"next_reset"`
 }
 
 type ClaudeError struct {

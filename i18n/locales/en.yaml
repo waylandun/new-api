@@ -279,6 +279,6 @@ custom_oauth.binding_not_found: "OAuth binding not found"
 custom_oauth.provider_id_field_invalid: "Could not extract user ID from provider response"
 
 # Subscription window-exhausted messages
-subscription.window_exceeded_total: "Subscription total quota exhausted ({{.Used}}/{{.Limit}})"
-subscription.window_exceeded_weekly: "Weekly window exhausted ({{.Used}}/{{.Limit}}); resets at {{.ResetTime}}"
-subscription.window_exceeded_five_hour: "5-hour window exhausted ({{.Used}}/{{.Limit}}); resets at {{.ResetTime}}"
+subscription.window_exceeded_total: "Subscription total quota insufficient: remaining {{.Remaining}}, required {{.Required}} ({{.Used}}/{{.Limit}} used)"
+subscription.window_exceeded_weekly: "Weekly window quota insufficient: remaining {{.Remaining}}, required {{.Required}} ({{.Used}}/{{.Limit}} used); resets at {{.ResetTime}}"
+subscription.window_exceeded_five_hour: "5-hour window quota insufficient: remaining {{.Remaining}}, required {{.Required}} ({{.Used}}/{{.Limit}} used); resets at {{.ResetTime}}"

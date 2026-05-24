@@ -23,6 +23,7 @@ import {
   Button,
   Card,
   Divider,
+  Progress,
   Select,
   Skeleton,
   Space,
@@ -38,8 +39,57 @@ import {
   formatSubscriptionDuration,
   formatSubscriptionResetPeriod,
 } from '../../helpers/subscriptionFormat';
+import { buildSubscriptionUsageSummary } from '../../helpers/subscriptionUsage';
 
 const { Text } = Typography;
+
+function formatRemaining(row, t) {
+  if (row.isUnlimited || row.remainingPercent === null) return t('不限');
+  return t('剩余 {{percent}}%', { percent: row.remainingPercent });
+}
+
+function UsagePercentRow({ row, t }) {
+  const resetAt =
+    row.resetAt && row.resetAt > Date.now() / 1000 ? row.resetAt : undefined;
+  const showActualRemaining =
+    !row.isUnlimited &&
+    !row.isRequestAvailable &&
+    row.actualRemaining !== null &&
+    row.actualRemaining > 0 &&
+    row.minimumRequestQuota > 0;
+
+  return (
+    <div className='mt-2'>
+      <div className='flex items-center justify-between gap-3 text-xs'>
+        <Text type='tertiary'>{t(row.labelKey)}</Text>
+        <Text strong className='tabular-nums'>
+          {formatRemaining(row, t)}
+        </Text>
+      </div>
+      {!row.isUnlimited && (
+        <Progress
+          percent={row.progressValue}
+          showInfo={false}
+          size='small'
+          style={{ marginTop: 4 }}
+        />
+      )}
+      {showActualRemaining && (
+        <div className='text-[11px] text-semi-color-text-2 mt-1'>
+          {t('实际剩余：{{remaining}} · 最低预扣：{{required}}', {
+            remaining: renderQuota(row.actualRemaining || 0),
+            required: renderQuota(row.minimumRequestQuota),
+          })}
+        </div>
+      )}
+      {resetAt && (
+        <div className='text-[11px] text-semi-color-text-2 mt-1'>
+          {t('下一次重置')}: {new Date(resetAt * 1000).toLocaleString()}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // 过滤易支付方式
 function getEpayMethods(payMethods = []) {
@@ -243,14 +293,6 @@ const SubscriptionPlansCard = ({
     return Math.max(0, Math.ceil(remaining / 86400));
   };
 
-  // 计算单个订阅的使用进度
-  const getUsagePercent = (sub) => {
-    const total = Number(sub?.subscription?.amount_total || 0);
-    const used = Number(sub?.subscription?.amount_used || 0);
-    if (total <= 0) return 0;
-    return Math.round((used / total) * 100);
-  };
-
   const cardContent = (
     <>
       {/* 卡片头部 */}
@@ -381,21 +423,17 @@ const SubscriptionPlansCard = ({
                   {allSubscriptions.map((sub, subIndex) => {
                     const isLast = subIndex === allSubscriptions.length - 1;
                     const subscription = sub.subscription;
-                    const totalAmount = Number(subscription?.amount_total || 0);
-                    const usedAmount = Number(subscription?.amount_used || 0);
-                    const remainAmount =
-                      totalAmount > 0
-                        ? Math.max(0, totalAmount - usedAmount)
-                        : 0;
                     const planTitle =
                       planTitleMap.get(subscription?.plan_id) || '';
                     const remainDays = getRemainingDays(sub);
-                    const usagePercent = getUsagePercent(sub);
                     const now = Date.now() / 1000;
                     const isExpired = (subscription?.end_time || 0) < now;
                     const isCancelled = subscription?.status === 'cancelled';
                     const isActive =
                       subscription?.status === 'active' && !isExpired;
+                    const usageSummary = isActive
+                      ? buildSubscriptionUsageSummary(sub, planTitle, now)
+                      : null;
 
                     return (
                       <div key={subscription?.id || subIndex}>
@@ -442,35 +480,17 @@ const SubscriptionPlansCard = ({
                             (subscription?.end_time || 0) * 1000,
                           ).toLocaleString()}
                         </div>
-                        {isActive && subscription?.next_reset_time > 0 && (
-                          <div className='text-xs text-gray-500 mb-2'>
-                            {t('下一次重置')}:{' '}
-                            {new Date(
-                              subscription.next_reset_time * 1000,
-                            ).toLocaleString()}
+                        {isActive && (
+                          <div className='mb-2'>
+                            {usageSummary?.rows.map((row) => (
+                              <UsagePercentRow
+                                key={row.key}
+                                row={row}
+                                t={t}
+                              />
+                            ))}
                           </div>
                         )}
-                        <div className='text-xs text-gray-500 mb-2'>
-                          {t('总额度')}:{' '}
-                          {totalAmount > 0 ? (
-                            <Tooltip
-                              content={`${t('原生额度')}：${usedAmount}/${totalAmount} · ${t('剩余')} ${remainAmount}`}
-                            >
-                              <span>
-                                {renderQuota(usedAmount)}/
-                                {renderQuota(totalAmount)} · {t('剩余')}{' '}
-                                {renderQuota(remainAmount)}
-                              </span>
-                            </Tooltip>
-                          ) : (
-                            t('不限')
-                          )}
-                          {totalAmount > 0 && (
-                            <span className='ml-2'>
-                              {t('已用')} {usagePercent}%
-                            </span>
-                          )}
-                        </div>
                         {!isLast && <Divider margin={12} />}
                       </div>
                     );

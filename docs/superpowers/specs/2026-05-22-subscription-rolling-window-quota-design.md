@@ -1,8 +1,8 @@
 # 订阅套餐 5 小时限额 + 周限额（会话式滚动窗口）设计
 
 - 日期：2026-05-22
-- 状态：已审定（待用户审阅）
-- 范围：`model/subscription.go`、`model/subscription_admin.go`（新增）、`model/subscription_window.go`（新增）、`controller/subscription.go`、`service/funding_source.go`、`web/default/src/features/subscriptions/*`、`web/default/src/features/wallet/*`、`i18n/`
+- 状态：已审定（含用户侧百分比展示补充）
+- 范围：`model/subscription.go`、`model/subscription_admin.go`（新增）、`model/subscription_window.go`（新增）、`controller/subscription.go`、`service/funding_source.go`、`web/default/src/features/subscriptions/*`、`web/default/src/features/wallet/*`、`web/default/src/components/*`、`web/classic/src/components/*`、`web/classic/src/helpers/*`、`i18n/`
 
 ## 1. 背景
 
@@ -19,6 +19,7 @@
 3. 限额数值在 `SubscriptionPlan` 上配置；用户购买订阅时把数值快照到 `UserSubscription` 上，存量订阅不受新字段影响。
 4. 管理员可对单个 `UserSubscription` 手动重置 5h 或周窗口。
 5. 所有改动在 SQLite/MySQL/PostgreSQL 三库下行为一致。
+6. 订阅用户侧只展示剩余额度百分比或 Unlimited，不展示实际订阅限额金额。
 
 ## 3. 非目标
 
@@ -26,7 +27,9 @@
 - 不变更现有的"套餐周期重置"逻辑（即 `quota_reset_period=daily/weekly/monthly/custom` 那一套）；它继续负责"AmountUsed 整体清零"，与新引入的滚动窗口正交。
 - 不引入按用户分组的限额，限额仍然挂在套餐上。
 - 不为存量已购订阅自动启用新限额（Q8 决定）。
-- 不修改 `web/classic` 旧前端。
+- 不新增专门服务用户侧百分比展示的后端字段或接口，前端直接复用现有订阅查询结果。
+- 不引入新的 24 小时"日限额"语义；用户界面的 Daily limit 沿用当前 5 小时滚动窗口字段。
+- 不在用户侧订阅额度摘要中展示实际 quota 金额；套餐价格、套餐配置、管理员视图等非用户额度摘要场景不受此限制。
 
 ## 4. 术语
 
@@ -41,10 +44,11 @@
 ## 5. 用户故事
 
 1. **管理员配置套餐**：在 plan 编辑表单填写 `5 小时窗口限额` 和 `7 天窗口限额`（任一为 0 表示该层不启用）。
-2. **用户购买套餐**：购买时把 plan 上的两层限额拍照式快照到 `UserSubscription`，订阅卡片上展示三条进度条。
+2. **用户购买套餐**：购买时把 plan 上的两层限额拍照式快照到 `UserSubscription`，用户钱包里的订阅卡片展示 Plan quota / Daily limit / Weekly limit 三类剩余额度百分比。
 3. **用户连续请求**：首请求开 5h 窗口和周窗口；窗口内累计用量到 `FiveHourLimit` 后，下一次请求被拒，错误消息说明"5 小时限额已用尽，下次重置时间 X"。
 4. **窗口过期**：5h 后用户再发请求，系统自动开新 5h 窗口（用量归零）。
 5. **管理员介入**：用户因业务需要紧急排障，管理员从 admin 后台点击"重置 5h 窗口"按钮，立即放行。
+6. **用户快速查看**：用户在导航栏系统公告按钮旁 hover 订阅额度按钮，可快速查看所有活跃订阅的剩余额度百分比；无活跃订阅时不显示该按钮。
 
 ## 6. 架构
 
@@ -56,7 +60,10 @@ model/subscription_window.go (新增)     ← 窗口策略纯函数（核心）
 service/funding_source.go               ← 透传 SubscriptionWindowError
 service/subscription_reset_task.go      ← 不变（套餐周期重置任务）
 web/default/src/features/subscriptions/ ← 表单与展示
-web/default/src/features/wallet/        ← 用户订阅卡片三条进度条
+web/default/src/features/wallet/        ← 用户订阅卡片百分比展示
+web/default/src/components/             ← 导航栏订阅额度按钮
+web/classic/src/components/             ← classic 钱包卡片与导航栏同步展示
+web/classic/src/helpers/                ← classic 订阅额度百分比计算工具
 ```
 
 ### 6.1 核心抽象：`subscription_window.go`
@@ -163,7 +170,7 @@ type UserSubscription struct {
 
 ### 7.3 数据库迁移
 
-按 CLAUDE.md Rule 2，所有迁移必须在 SQLite/MySQL/PostgreSQL 三库通用：
+按项目数据库兼容性规则，所有迁移必须在 SQLite/MySQL/PostgreSQL 三库通用：
 - `subscription_plans`、`user_subscriptions` 表均通过 GORM `AutoMigrate` 添加 `bigint NOT NULL DEFAULT 0` 字段。
 - 三库下 `ADD COLUMN bigint NOT NULL DEFAULT 0` 都是元数据级操作，不会触发全表重写。
 
@@ -340,7 +347,7 @@ func AdminResetUserSubscriptionWindow(userSubscriptionId int, kind WindowKind) e
 
 ### 9.5 前端改动（`web/default`）
 
-只改下面四处，遵循 CLAUDE.md Rule 3 用 bun：
+前端分为"管理员配置 / 管理"和"用户侧额度摘要"两类。用户侧额度摘要不新增后端字段，直接复用 `GET /api/subscription/self` 已返回的 `amount_total`、`amount_used`、`five_hour_limit`、`five_hour_used`、`weekly_limit`、`weekly_used` 等字段。
 
 **a) `src/features/subscriptions/lib/plan-form.ts`**
 - `getPlanFormSchema` 加 `five_hour_amount`、`weekly_amount`（`z.coerce.number().min(0)`）
@@ -350,24 +357,58 @@ func AdminResetUserSubscriptionWindow(userSubscriptionId int, kind WindowKind) e
 - 在 `total_amount` 字段下方新增两个数字输入：`5 小时窗口限额`、`7 天窗口限额`
 - 提示文案："0 表示不启用此层"
 
-**c) 用户侧订阅卡片（`src/features/wallet/components/subscription-plans-card.tsx`）**
-- 在订阅卡片上新增三个 progress bar：周期总额 / 周用量 / 5h 用量
-- 每条进度条下显示 "X / Y · 重置于 Z"
-- 当 `*_limit == 0` 不渲染该层
+**c) 用户侧订阅额度摘要工具（`src/features/subscriptions/lib/usage-summary.ts` + hook）**
+- 只使用 `status === 'active'` 且 `end_time > now` 的订阅。
+- `Plan quota` 使用 `amount_total / amount_used`。
+- `Daily limit` 使用 `five_hour_limit / five_hour_used`；这里的 Daily limit 是 UI 命名，实际仍对应 5 小时滚动窗口。
+- `Weekly limit` 使用 `weekly_limit / weekly_used`。
+- 百分比统一计算为 `clamp((limit - used) / limit * 100, 0, 100)`，展示为 `{{percent}}% remaining`。
+- `limit <= 0` 视为不限额，显示 `Unlimited`。
+- 用户侧不展示 `used / limit`、剩余额度原始值或任何实际 quota 金额。
 
-**d) Admin 用户订阅详情对话框（`subscriptions-dialogs.tsx`）**
+**d) 钱包管理页订阅卡片（`src/features/wallet/components/subscription-plans-card.tsx`）**
+- 当前订阅区域改为百分比视角，展示 `Plan quota`、`Daily limit`、`Weekly limit` 三类进度条 / 文案。
+- 保留套餐名、状态、到期时间、重置时间等非金额信息。
+- 过期订阅、取消订阅和无订阅状态不误显示额度摘要。
+
+**e) 导航栏订阅额度按钮（`src/components/subscription-quota-button.tsx` + `app-header.tsx`）**
+- 按钮放在系统公告按钮旁边，使用 icon-only 形态，避免挤压导航栏。
+- 无活跃订阅时隐藏；有活跃订阅时显示。
+- hover 后展示各活跃订阅的套餐名和三类剩余额度百分比。
+- 多个活跃订阅逐个展示；按钮摘要状态使用所有有限额度中的最低剩余百分比。
+
+**f) Admin 用户订阅详情对话框（`subscriptions-dialogs.tsx`）**
 - 新增"重置 5h 窗口"、"重置周窗口"两个按钮，确认后调上面新增的 admin API
 
-`web/classic` 旧前端按"渐进维护"原则不动。
+### 9.6 前端改动（`web/classic`）
 
-### 9.6 国际化
+classic 旧前端也同步用户侧百分比展示，保持和 default 主题一致的用户语义：
 
-按 CLAUDE.md i18n 章节：
+**a) `src/helpers/subscriptionUsage.js`**
+- 抽出 classic 版订阅额度摘要工具，计算规则与 default 的 `usage-summary.ts` 对齐。
+- 只汇总 active 且未过期的订阅。
+- `limit <= 0` 显示 `Unlimited` / `不限`，不展示实际金额。
+
+**b) 钱包管理页（`src/components/topup/SubscriptionPlansCard.jsx`）**
+- 当前订阅区域移除原有 `used / total`、剩余额度金额和 `已用 x%` 展示。
+- 改为展示 `套餐额度`、`日限额`、`周限额` 三类剩余额度百分比 / 不限额状态。
+- 可购买套餐卡片中的套餐价格、套餐配置额度仍按原有逻辑展示；它不属于"订阅用户当前额度摘要"。
+
+**c) 导航栏（`src/components/layout/headerbar/SubscriptionQuotaButton.jsx` + `ActionButtons.jsx`）**
+- 在系统公告按钮后新增订阅额度 icon-only 按钮。
+- 无登录用户、无活跃订阅或加载失败时隐藏。
+- hover Popover 中逐个展示活跃订阅的套餐名和三类剩余额度百分比。
+
+### 9.7 国际化
+
+按前端 i18n 规则补齐所有 locale：
 
 - 后端 (`i18n/`)：新增三条 key——`subscription_window_exceeded_five_hour`、`subscription_window_exceeded_weekly`、`subscription_window_exceeded_total`，en/zh 两份。
-- 前端 (`web/default/src/i18n/locales/`)：表单 label / 进度条 / 提示文案以英文 key 写在组件中；`bun run i18n:sync` 后 zh.json 等自动同步缺失 key；重置时间格式化沿用现有 dayjs / Intl 工具。
+- default 前端 (`web/default/src/i18n/locales/{en,zh,fr,ja,ru,vi}.json`)：补齐 `Subscription quota`、`Plan quota`、`Daily limit`、`Weekly limit`、`{{percent}}% remaining`、`Unlimited`。
+- classic 前端 (`web/classic/src/i18n/locales/{zh-CN,zh,zh-TW,en,fr,ja,ru,vi}.json`)：补齐 `订阅额度`、`套餐额度`、`日限额`、`周限额`、`剩余 {{percent}}%` 等中文源 key 的各语言翻译。
+- `{{percent}}` 占位符必须在所有语言中保留。
 
-### 9.7 日志与审计
+### 9.8 日志与审计
 
 `PreConsume` 拒绝时，沿用现有 `RecordLog`：写一条 `LogTypeManage` 类型，内容如：
 
@@ -419,10 +460,14 @@ func AdminResetUserSubscriptionWindow(userSubscriptionId int, kind WindowKind) e
 
 ### 10.4 前端
 
-不写自动化测试（与项目其它前端模块保持一致）。按 CLAUDE.md "UI changes" 要求人工验证：
-- `bun run dev` 启动 default 主题
-- 创建一个带 5h/周限额的 plan，购买，连续请求触发 5h 拦截，观察错误提示与 UI 进度条
-- 测 admin 重置按钮：拦截后点重置 → 立即可用
+不写自动化测试（与项目其它前端模块保持一致）。按 UI 变更要求人工验证：
+- default 主题使用本地 `npm.cmd` 入口执行 `npm.cmd run i18n:sync`、`npm.cmd run typecheck`、`npm.cmd run build`。
+- classic 主题没有独立 typecheck 脚本，使用 `npm.cmd run build` 做构建验证。
+- 创建一个带 5h/周限额的 plan，购买，连续请求触发 5h 拦截，观察错误提示。
+- 钱包管理页当前订阅区域只显示 `Plan quota` / `Daily limit` / `Weekly limit` 的剩余百分比或 `Unlimited`，不出现实际订阅额度金额。
+- 导航栏在系统公告按钮旁显示订阅额度按钮；无活跃订阅时隐藏；hover 内容能逐个展示活跃订阅的三类剩余额度百分比。
+- 测 admin 重置按钮：拦截后点重置 → 立即可用。
+- 桌面和移动宽度下不出现文本重叠或导航挤压。
 
 ### 10.5 回归保护
 
@@ -438,10 +483,13 @@ func AdminResetUserSubscriptionWindow(userSubscriptionId int, kind WindowKind) e
 - **零停机部署**：先发布新版二进制（带迁移），AutoMigrate 加列；现有运行中订阅 `*_limit/*_used/*_window_start` 全 0，业务行为与上线前一致。
 - **回滚**：旧二进制忽略新列即可，不影响数据完整性。
 - **多节点**：定时任务仍由 `IsMasterNode` 节点跑，与现状一致；窗口重置是懒重置，本身不需多节点协调。
+- **前端部署**：生产环境继续走现有 Docker 构建流程；本地验证入口可使用 `npm.cmd`，不要求开发者使用 Bun。
 
 ## 12. 风险与未决事项
 
-- 三层并存对用户的"心智模型"较重；前端必须把三条进度条 + 重置时间显式展示，否则用户会困惑"为什么我还有总额却被拦截了"。
+- 三层并存对用户的"心智模型"较重；前端必须把 `Plan quota`、`Daily limit`、`Weekly limit` 三类剩余额度百分比显式展示，否则用户会困惑"为什么我还有总额却被拦截了"。
+- `Daily limit` 是用户可理解的 UI 命名，实际仍映射到 5 小时滚动窗口；需要避免在后端或文档其他位置引入 24 小时日限额语义。
+- 用户侧隐藏实际 quota 金额会降低精确排障信息；运营和管理员仍应通过 admin / 日志查看原始限额与用量。
 - `PreConsume` 在多订阅场景下"按 end_time asc 试下一条"的语义保留；当用户有两条同时活跃的订阅、其一 5h 满时会自动用另一条扣减——这是已存在行为，本 spec 不修改。
 - 单 `amount` 一次超出 5h 限额时直接拒绝，不做"切片预扣"。
 
@@ -449,7 +497,8 @@ func AdminResetUserSubscriptionWindow(userSubscriptionId int, kind WindowKind) e
 
 1. 后端单测 / 集成测试全绿。
 2. SQLite/MySQL/PostgreSQL 三库 AutoMigrate 均成功。
-3. 在 `bun run dev` 下手动验证：plan 编辑表单、订阅卡片三条进度条、5h 拦截、admin 重置按钮可用。
-4. 老套餐 / 老订阅行为零变化（集成测试 + 人工验证一条 0/0 plan 路径）。
-
-
+3. default 前端本地验证通过：`npm.cmd run i18n:sync`、`npm.cmd run typecheck`、`npm.cmd run build`。
+4. classic 前端本地验证通过：`npm.cmd run build`。
+5. 手动验证：plan 编辑表单、订阅卡片百分比展示、导航栏 hover 摘要、5h 拦截、admin 重置按钮可用。
+6. 用户侧当前订阅额度摘要不展示实际 quota 金额；不限额显示 `Unlimited` / `不限`。
+7. 老套餐 / 老订阅行为零变化（集成测试 + 人工验证一条 0/0 plan 路径）。

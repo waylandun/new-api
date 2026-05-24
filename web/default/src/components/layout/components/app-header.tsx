@@ -24,6 +24,7 @@ import { NotificationButton } from '@/components/notification-button'
 import { NotificationDialog } from '@/components/notification-dialog'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
+import { SubscriptionQuotaButton } from '@/components/subscription-quota-button'
 import { defaultTopNavLinks } from '../config/top-nav.config'
 import { type TopNavLink } from '../types'
 import { Header } from './header'
@@ -133,6 +134,7 @@ export function AppHeader({
                 onClick={() => notifications.openDialog()}
               />
             )}
+            <SubscriptionQuotaButton />
             <LanguageSwitcher />
             {showConfigDrawer && <ConfigDrawer />}
             {showProfileDropdown && <ProfileDropdown />}

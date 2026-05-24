@@ -728,6 +728,93 @@ type SubscriptionPreConsumeResult struct {
 	AmountUsedAfter    int64
 }
 
+func subscriptionWindowSeverity(kind WindowKind) int {
+	switch kind {
+	case WindowKindTotal:
+		return 0
+	case WindowKindWeekly:
+		return 1
+	case WindowKindFiveHour:
+		return 2
+	default:
+		return 99
+	}
+}
+
+func preferSubscriptionWindowError(current, next *SubscriptionWindowError) *SubscriptionWindowError {
+	if current == nil {
+		return next
+	}
+	if next == nil {
+		return current
+	}
+	if subscriptionWindowSeverity(next.Kind) < subscriptionWindowSeverity(current.Kind) {
+		return next
+	}
+	return current
+}
+
+func windowErrorFromEval(sub *UserSubscription, eval WindowEvalResult, amount, now int64) *SubscriptionWindowError {
+	if sub == nil {
+		return nil
+	}
+	switch eval.BlockedBy {
+	case WindowKindTotal:
+		remain := remaining(sub.AmountTotal, sub.AmountUsed)
+		return &SubscriptionWindowError{
+			Kind:      WindowKindTotal,
+			Limit:     sub.AmountTotal,
+			Used:      sub.AmountUsed,
+			Remaining: remain,
+			Required:  amount,
+			NextReset: 0,
+		}
+	case WindowKindWeekly:
+		used := sub.WeeklyUsed
+		if sub.WeeklyLimit > 0 && windowExpired(sub.WeeklyWindowStart, weeklyWindowSeconds, now) {
+			used = 0
+		}
+		remain := remaining(sub.WeeklyLimit, used)
+		return &SubscriptionWindowError{
+			Kind:      WindowKindWeekly,
+			Limit:     sub.WeeklyLimit,
+			Used:      used,
+			Remaining: remain,
+			Required:  amount,
+			NextReset: eval.NextReset,
+		}
+	case WindowKindFiveHour:
+		used := sub.FiveHourUsed
+		if sub.FiveHourLimit > 0 && windowExpired(sub.FiveHourWindowStart, fiveHourWindowSeconds, now) {
+			used = 0
+		}
+		remain := remaining(sub.FiveHourLimit, used)
+		return &SubscriptionWindowError{
+			Kind:      WindowKindFiveHour,
+			Limit:     sub.FiveHourLimit,
+			Used:      used,
+			Remaining: remain,
+			Required:  amount,
+			NextReset: eval.NextReset,
+		}
+	default:
+		return nil
+	}
+}
+
+func recordSubscriptionWindowExceededLog(userId int, modelName string, e *SubscriptionWindowError) {
+	if e == nil {
+		return
+	}
+	resetText := "none"
+	if e.NextReset > 0 {
+		resetText = time.Unix(e.NextReset, 0).Format("2006-01-02 15:04:05")
+	}
+	content := fmt.Sprintf("subscription window quota exceeded: kind=%s, model=%s, used=%d/%d, next_reset=%s",
+		e.Kind, modelName, e.Used, e.Limit, resetText)
+	RecordLog(userId, LogTypeManage, content)
+}
+
 // ExpireDueSubscriptions marks expired subscriptions and handles group downgrade.
 func ExpireDueSubscriptions(limit int) (int, error) {
 	if limit <= 0 {
@@ -935,20 +1022,7 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 
 			eval := EvaluateConsume(&sub, plan, amount, now)
 			if !eval.Allow {
-				switch eval.BlockedBy {
-				case WindowKindTotal:
-					lastErr = &SubscriptionWindowError{
-						Kind: WindowKindTotal, Limit: sub.AmountTotal, Used: sub.AmountUsed, NextReset: 0,
-					}
-				case WindowKindWeekly:
-					lastErr = &SubscriptionWindowError{
-						Kind: WindowKindWeekly, Limit: sub.WeeklyLimit, Used: sub.WeeklyUsed, NextReset: eval.NextReset,
-					}
-				case WindowKindFiveHour:
-					lastErr = &SubscriptionWindowError{
-						Kind: WindowKindFiveHour, Limit: sub.FiveHourLimit, Used: sub.FiveHourUsed, NextReset: eval.NextReset,
-					}
-				}
+				lastErr = preferSubscriptionWindowError(lastErr, windowErrorFromEval(&sub, eval, amount, now))
 				continue
 			}
 
@@ -994,6 +1068,10 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		return fmt.Errorf("subscription quota insufficient, need=%d", amount)
 	})
 	if err != nil {
+		var winErr *SubscriptionWindowError
+		if errors.As(err, &winErr) {
+			recordSubscriptionWindowExceededLog(userId, modelName, winErr)
+		}
 		return nil, err
 	}
 	return returnValue, nil

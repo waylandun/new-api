@@ -23,6 +23,8 @@ import pkg from '@douyinfe/vite-plugin-semi';
 import path from 'path';
 import { codeInspectorPlugin } from 'code-inspector-plugin';
 const { vitePluginSemi } = pkg;
+const devHost = process.env.HOST || process.env.VITE_HOST || '127.0.0.1';
+const devPort = Number(process.env.PORT || process.env.VITE_PORT || 3002);
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -88,7 +90,8 @@ export default defineConfig({
     },
   },
   server: {
-    host: '0.0.0.0',
+    host: devHost,
+    port: devPort,
     proxy: {
       '/api': {
         target: 'http://localhost:3000',

@@ -3824,6 +3824,13 @@
     "并确认自行承担部署": "confirm that I bear legal responsibility arising from deployment",
     "运营和收费行为产生的法律责任": "operation and charging behavior",
     "，": ", ",
-    "、": ", "
+    "、": ", ",
+    "订阅额度": "Subscription quota",
+    "套餐额度": "Plan quota",
+    "5 小时限额": "5-hour limit",
+    "日限额": "Daily limit",
+    "周限额": "Weekly limit",
+    "实际剩余：{{remaining}} · 最低预扣：{{required}}": "Actual remaining: {{remaining}} · Minimum request reserve: {{required}}",
+    "剩余 {{percent}}%": "{{percent}}% remaining"
   }
 }

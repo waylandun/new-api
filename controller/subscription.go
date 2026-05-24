@@ -113,6 +113,28 @@ type AdminUpsertSubscriptionPlanRequest struct {
 	Plan model.SubscriptionPlan `json:"plan"`
 }
 
+const maxSubscriptionWindowAmount int64 = 1_000_000_000_000_000
+
+func validateSubscriptionWindowAmounts(c *gin.Context, plan model.SubscriptionPlan) bool {
+	if plan.FiveHourAmount < 0 {
+		common.ApiErrorMsg(c, "5小时窗口额度不能为负数")
+		return false
+	}
+	if plan.WeeklyAmount < 0 {
+		common.ApiErrorMsg(c, "周窗口额度不能为负数")
+		return false
+	}
+	if plan.FiveHourAmount > maxSubscriptionWindowAmount {
+		common.ApiErrorMsg(c, "5小时窗口额度不能超过1000000000000000")
+		return false
+	}
+	if plan.WeeklyAmount > maxSubscriptionWindowAmount {
+		common.ApiErrorMsg(c, "周窗口额度不能超过1000000000000000")
+		return false
+	}
+	return true
+}
+
 func AdminCreateSubscriptionPlan(c *gin.Context) {
 	if !requirePaymentCompliance(c) {
 		return
@@ -152,6 +174,9 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 	}
 	if req.Plan.TotalAmount < 0 {
 		common.ApiErrorMsg(c, "总额度不能为负数")
+		return
+	}
+	if !validateSubscriptionWindowAmounts(c, req.Plan) {
 		return
 	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
@@ -221,6 +246,9 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "总额度不能为负数")
 		return
 	}
+	if !validateSubscriptionWindowAmounts(c, req.Plan) {
+		return
+	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
 	if req.Plan.UpgradeGroup != "" {
 		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok {
@@ -250,6 +278,8 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"creem_product_id":           req.Plan.CreemProductId,
 			"max_purchase_per_user":      req.Plan.MaxPurchasePerUser,
 			"total_amount":               req.Plan.TotalAmount,
+			"five_hour_amount":           req.Plan.FiveHourAmount,
+			"weekly_amount":              req.Plan.WeeklyAmount,
 			"upgrade_group":              req.Plan.UpgradeGroup,
 			"quota_reset_period":         req.Plan.QuotaResetPeriod,
 			"quota_reset_custom_seconds": req.Plan.QuotaResetCustomSeconds,

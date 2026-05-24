@@ -34,12 +34,14 @@ type SubscriptionWindowError struct {
 	Kind      WindowKind
 	Limit     int64
 	Used      int64
+	Remaining int64
+	Required  int64
 	NextReset int64 // unix；0 表示无自动重置（如 total 层）
 }
 
 func (e *SubscriptionWindowError) Error() string {
-	return fmt.Sprintf("subscription window exceeded: kind=%s, used=%d/%d, next_reset=%d",
-		e.Kind, e.Used, e.Limit, e.NextReset)
+	return fmt.Sprintf("subscription window exceeded: kind=%s, used=%d/%d, remaining=%d, required=%d, next_reset=%d",
+		e.Kind, e.Used, e.Limit, e.Remaining, e.Required, e.NextReset)
 }
 
 func (e *SubscriptionWindowError) Is(target error) bool {

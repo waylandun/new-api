@@ -129,12 +129,14 @@ func AdminResetUserSubscriptionWindow(userSubscriptionId int, kind WindowKind) (
 		return "", fmt.Errorf("unsupported window kind: %s", kind)
 	}
 	var msg string
+	var userId int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var sub UserSubscription
 		if err := tx.Set("gorm:query_option", "FOR UPDATE").
 			Where("id = ?", userSubscriptionId).First(&sub).Error; err != nil {
 			return err
 		}
+		userId = sub.UserId
 		switch kind {
 		case WindowKindFiveHour:
 			sub.FiveHourUsed = 0
@@ -152,5 +154,6 @@ func AdminResetUserSubscriptionWindow(userSubscriptionId int, kind WindowKind) (
 	if err != nil {
 		return "", err
 	}
+	RecordLog(userId, LogTypeManage, msg)
 	return msg, nil
 }

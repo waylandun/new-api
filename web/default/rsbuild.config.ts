@@ -12,6 +12,8 @@ export default defineConfig(({ envMode }) => {
     process.env.VITE_REACT_APP_SERVER_URL ||
     env.rawPublicVars.VITE_REACT_APP_SERVER_URL ||
     'http://localhost:3000'
+  const devHost = process.env.HOST || process.env.RSBUILD_HOST || '127.0.0.1'
+  const devPort = Number(process.env.PORT || process.env.RSBUILD_PORT || 3001)
 
   const isProd = envMode === 'production'
   const devProxy = Object.fromEntries(
@@ -64,7 +66,8 @@ export default defineConfig(({ envMode }) => {
       template: './index.html',
     },
     server: {
-      host: '0.0.0.0',
+      host: devHost,
+      port: devPort,
       proxy: devProxy,
     },
     output: {

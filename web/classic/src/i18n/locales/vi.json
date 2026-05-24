@@ -4213,6 +4213,13 @@
     "并确认自行承担部署": "confirm that I bear legal responsibility arising from deployment",
     "运营和收费行为产生的法律责任": "operation and charging behavior",
     "，": ", ",
-    "、": ", "
+    "、": ", ",
+    "订阅额度": "Hạn mức đăng ký",
+    "套餐额度": "Hạn mức gói",
+    "5 小时限额": "Giới hạn 5 giờ",
+    "日限额": "Giới hạn hằng ngày",
+    "周限额": "Giới hạn hằng tuần",
+    "实际剩余：{{remaining}} · 最低预扣：{{required}}": "Còn thực tế: {{remaining}} · Mức giữ tối thiểu cho yêu cầu: {{required}}",
+    "剩余 {{percent}}%": "Còn {{percent}}%"
   }
 }

@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -79,6 +80,9 @@ func TestPreConsume_BlockedByFiveHour_ReturnsWindowError(t *testing.T) {
 	}
 	if winErr.Kind != WindowKindFiveHour || winErr.Limit != 1000 || winErr.Used != 1000 {
 		t.Fatalf("unexpected fields: %+v", winErr)
+	}
+	if winErr.Remaining != 0 || winErr.Required != 1 {
+		t.Fatalf("unexpected remaining/required: %+v", winErr)
 	}
 	if !errors.Is(err, ErrSubscriptionWindowExceeded) {
 		t.Fatalf("errors.Is should match sentinel")
@@ -167,5 +171,97 @@ func TestPreConsume_LegacySub_ZeroLimits_BehavesAsBefore(t *testing.T) {
 	}
 	if _, err := PreConsumeUserSubscription("req-pc-7", 1006, "m", 0, 600); err == nil {
 		t.Fatalf("expected total exhaustion error, got nil")
+	}
+}
+
+func TestPreConsume_MultipleBlockedSubs_ReturnsMostSevereWindowError(t *testing.T) {
+	truncateTables(t)
+	now := GetDBTimestamp()
+
+	pTotal := mkPlanForPreconsumeTest(t, 100, 0, 0)
+	totalSub := mkActiveSubForPreconsumeTest(t, 1007, pTotal, now+1000)
+	totalSub.AmountUsed = 100
+	if err := DB.Save(totalSub).Error; err != nil {
+		t.Fatalf("save total sub: %v", err)
+	}
+
+	pFiveHour := mkPlanForPreconsumeTest(t, 0, 100, 0)
+	fiveHourSub := mkActiveSubForPreconsumeTest(t, 1007, pFiveHour, now+2000)
+	fiveHourSub.FiveHourUsed = 100
+	fiveHourSub.FiveHourWindowStart = now
+	if err := DB.Save(fiveHourSub).Error; err != nil {
+		t.Fatalf("save five-hour sub: %v", err)
+	}
+
+	_, err := PreConsumeUserSubscription("req-pc-8", 1007, "m", 0, 1)
+	var winErr *SubscriptionWindowError
+	if !errors.As(err, &winErr) {
+		t.Fatalf("expected SubscriptionWindowError, got %v", err)
+	}
+	if winErr.Kind != WindowKindTotal {
+		t.Fatalf("expected total to be preferred over later five-hour block, got %+v", winErr)
+	}
+}
+
+func TestPreConsume_WindowExceededRecordsManageLog(t *testing.T) {
+	truncateTables(t)
+	now := GetDBTimestamp()
+	p := mkPlanForPreconsumeTest(t, 0, 100, 0)
+	sub := mkActiveSubForPreconsumeTest(t, 1008, p, now+86400)
+	sub.FiveHourUsed = 100
+	sub.FiveHourWindowStart = now
+	if err := DB.Save(sub).Error; err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	_, err := PreConsumeUserSubscription("req-pc-9", 1008, "m", 0, 1)
+	if err == nil {
+		t.Fatalf("expected window error")
+	}
+
+	var logs []Log
+	if err := LOG_DB.Where("user_id = ? AND type = ?", 1008, LogTypeManage).Find(&logs).Error; err != nil {
+		t.Fatalf("query logs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected one manage log, got %d", len(logs))
+	}
+	if logs[0].Content == "" || !strings.Contains(logs[0].Content, "five_hour") {
+		t.Fatalf("unexpected log content: %q", logs[0].Content)
+	}
+}
+
+func TestAdminResetUserSubscriptionWindow_RecordsManageLog(t *testing.T) {
+	truncateTables(t)
+	now := GetDBTimestamp()
+	p := mkPlanForPreconsumeTest(t, 0, 100, 0)
+	sub := mkActiveSubForPreconsumeTest(t, 1009, p, now+86400)
+	sub.FiveHourUsed = 100
+	sub.FiveHourWindowStart = now
+	if err := DB.Save(sub).Error; err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if _, err := AdminResetUserSubscriptionWindow(sub.Id, WindowKindFiveHour); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	var reloaded UserSubscription
+	if err := DB.First(&reloaded, sub.Id).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.FiveHourUsed != 0 || reloaded.FiveHourWindowStart != 0 {
+		t.Fatalf("expected window reset, got used=%d start=%d", reloaded.FiveHourUsed, reloaded.FiveHourWindowStart)
+	}
+
+	var logs []Log
+	if err := LOG_DB.Where("user_id = ? AND type = ?", 1009, LogTypeManage).Find(&logs).Error; err != nil {
+		t.Fatalf("query logs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected one manage log, got %d", len(logs))
+	}
+	if !strings.Contains(logs[0].Content, "five_hour") {
+		t.Fatalf("unexpected log content: %q", logs[0].Content)
 	}
 }

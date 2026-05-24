@@ -3679,6 +3679,13 @@
     "并确认自行承担部署": "confirm that I bear legal responsibility arising from deployment",
     "运营和收费行为产生的法律责任": "operation and charging behavior",
     "，": ", ",
-    "、": ", "
+    "、": ", ",
+    "订阅额度": "Quota d'abonnement",
+    "套餐额度": "Quota du forfait",
+    "5 小时限额": "Limite de 5 heures",
+    "日限额": "Limite quotidienne",
+    "周限额": "Limite hebdomadaire",
+    "实际剩余：{{remaining}} · 最低预扣：{{required}}": "Solde réel : {{remaining}} · Réserve minimale par requête : {{required}}",
+    "剩余 {{percent}}%": "{{percent}} % restants"
   }
 }

@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@douyinfe/semi-icons": "^2.63.1",
-    "@douyinfe/semi-ui": "^2.69.1",
-    "@lobehub/icons": "^2.0.0",
+    "@douyinfe/semi-icons": "2.72.2",
+    "@douyinfe/semi-ui": "2.72.2",
+    "@lobehub/icons": "2.1.0",
+    "antd": "5.25.2",
     "@visactor/react-vchart": "~1.8.8",
     "@visactor/vchart": "~1.8.8",
     "@visactor/vchart-semi-theme": "~1.8.8",

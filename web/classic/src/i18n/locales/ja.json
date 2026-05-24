@@ -3648,6 +3648,13 @@
     "并确认自行承担部署": "confirm that I bear legal responsibility arising from deployment",
     "运营和收费行为产生的法律责任": "operation and charging behavior",
     "，": ", ",
-    "、": ", "
+    "、": ", ",
+    "订阅额度": "サブスクリプション枠",
+    "套餐额度": "プラン枠",
+    "5 小时限额": "5時間制限",
+    "日限额": "1日あたりの上限",
+    "周限额": "週間上限",
+    "实际剩余：{{remaining}} · 最低预扣：{{required}}": "実際の残量: {{remaining}} · 最低リクエスト予約: {{required}}",
+    "剩余 {{percent}}%": "残り {{percent}}%"
   }
 }

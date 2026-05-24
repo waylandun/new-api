@@ -3699,6 +3699,13 @@
     "并确认自行承担部署": "confirm that I bear legal responsibility arising from deployment",
     "运营和收费行为产生的法律责任": "operation and charging behavior",
     "，": ", ",
-    "、": ", "
+    "、": ", ",
+    "订阅额度": "Квота подписки",
+    "套餐额度": "Квота плана",
+    "5 小时限额": "Лимит 5 часов",
+    "日限额": "Дневной лимит",
+    "周限额": "Недельный лимит",
+    "实际剩余：{{remaining}} · 最低预扣：{{required}}": "Фактический остаток: {{remaining}} · Минимальный резерв запроса: {{required}}",
+    "剩余 {{percent}}%": "Осталось {{percent}}%"
   }
 }

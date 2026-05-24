@@ -18,8 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Crown, RefreshCw, Sparkles, Check } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
+import { useSystemConfig } from '@/hooks/use-system-config'
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -53,6 +55,11 @@ import {
 } from '@/features/subscriptions/api'
 import { SubscriptionPurchaseDialog } from '@/features/subscriptions/components/dialogs/subscription-purchase-dialog'
 import { formatDuration, formatResetPeriod } from '@/features/subscriptions/lib'
+import {
+  buildSubscriptionUsageSummary,
+  selfSubscriptionQueryKey,
+  type SubscriptionUsageRow,
+} from '@/features/subscriptions/lib/usage-summary'
 import type {
   PlanRecord,
   UserSubscriptionRecord,
@@ -88,27 +95,44 @@ function getBillingPreferenceLabel(
   }
 }
 
-function WindowBar(props: {
-  label: string
-  used: number
-  limit: number
-  resetAt?: number // unix seconds; 0/undefined → no reset hint
-  resetLabel: string // localized "Resets at" string
-}) {
-  if (props.limit <= 0) return null
-  const pct = Math.min(100, Math.round((props.used / props.limit) * 100))
+function UsagePercentRow({ row }: { row: SubscriptionUsageRow }) {
+  const { t } = useTranslation()
+  const resetAt =
+    row.resetAt && row.resetAt > Date.now() / 1000 ? row.resetAt : undefined
+  const value =
+    row.isUnlimited || row.remainingPercent === null
+      ? t('Unlimited')
+      : t('{{percent}}% remaining', { percent: row.remainingPercent })
+  const showActualRemaining =
+    !row.isUnlimited &&
+    !row.isRequestAvailable &&
+    row.actualRemaining !== null &&
+    row.actualRemaining > 0 &&
+    row.minimumRequestQuota > 0
   return (
     <div className='mt-2'>
       <div className='text-muted-foreground flex items-center justify-between text-xs'>
-        <span>{props.label}</span>
-        <span>
-          {props.used.toLocaleString()} / {props.limit.toLocaleString()}
-          {props.resetAt && props.resetAt > Date.now() / 1000
-            ? ` · ${props.resetLabel} ${new Date(props.resetAt * 1000).toLocaleString()}`
-            : ''}
+        <span>{t(row.labelKey)}</span>
+        <span className='text-foreground font-medium tabular-nums'>
+          {value}
         </span>
       </div>
-      <Progress value={pct} className='mt-1 h-1.5' />
+      {!row.isUnlimited && (
+        <Progress value={row.progressValue} className='mt-1 h-1.5' />
+      )}
+      {showActualRemaining && (
+        <div className='text-muted-foreground mt-1 text-[11px]'>
+          {t('Actual remaining: {{remaining}} · Minimum request reserve: {{required}}', {
+            remaining: formatQuota(row.actualRemaining || 0),
+            required: formatQuota(row.minimumRequestQuota),
+          })}
+        </div>
+      )}
+      {resetAt && (
+        <div className='text-muted-foreground mt-1 text-[11px]'>
+          {t('Resets at')} {new Date(resetAt * 1000).toLocaleString()}
+        </div>
+      )}
     </div>
   )
 }
@@ -118,6 +142,8 @@ export function SubscriptionPlansCard({
   onAvailabilityChange,
 }: SubscriptionPlansCardProps) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const { preConsumedQuota } = useSystemConfig()
 
   const [plans, setPlans] = useState<PlanRecord[]>([])
   const [activeSubscriptions, setActiveSubscriptions] = useState<
@@ -162,11 +188,12 @@ export function SubscriptionPlansCard({
         )
         setActiveSubscriptions(res.data.subscriptions || [])
         setAllSubscriptions(res.data.all_subscriptions || [])
+        queryClient.setQueryData(selfSubscriptionQueryKey, res)
       }
     } catch {
       // ignore
     }
-  }, [])
+  }, [queryClient])
 
   useEffect(() => {
     const init = async () => {
@@ -244,13 +271,6 @@ export function SubscriptionPlansCard({
     if (!endTime) return 0
     const now = Date.now() / 1000
     return Math.max(0, Math.ceil((endTime - now) / 86400))
-  }
-
-  const getUsagePercent = (sub: UserSubscriptionRecord) => {
-    const total = Number(sub?.subscription?.amount_total || 0)
-    const used = Number(sub?.subscription?.amount_used || 0)
-    if (total <= 0) return 0
-    return Math.round((used / total) * 100)
   }
 
   if (loading) {
@@ -415,37 +435,22 @@ export function SubscriptionPlansCard({
               <div className='max-h-64 space-y-3 overflow-y-auto pr-1'>
                 {allSubscriptions.map((sub) => {
                   const subscription = sub.subscription
-                  const totalAmount = Number(subscription?.amount_total || 0)
-                  const usedAmount = Number(subscription?.amount_used || 0)
-                  const remainAmount =
-                    totalAmount > 0 ? Math.max(0, totalAmount - usedAmount) : 0
-                  const fiveHourLimit = Number(subscription?.five_hour_limit || 0)
-                  const fiveHourUsed = Number(subscription?.five_hour_used || 0)
-                  const fiveHourWindowStart = Number(
-                    subscription?.five_hour_window_start || 0
-                  )
-                  const fiveHourResetAt =
-                    fiveHourWindowStart > 0
-                      ? fiveHourWindowStart + 5 * 60 * 60
-                      : 0
-                  const weeklyLimit = Number(subscription?.weekly_limit || 0)
-                  const weeklyUsed = Number(subscription?.weekly_used || 0)
-                  const weeklyWindowStart = Number(
-                    subscription?.weekly_window_start || 0
-                  )
-                  const weeklyResetAt =
-                    weeklyWindowStart > 0
-                      ? weeklyWindowStart + 7 * 24 * 60 * 60
-                      : 0
                   const planTitle =
                     planTitleMap.get(subscription?.plan_id) || ''
                   const remainDays = getRemainingDays(sub)
-                  const usagePercent = getUsagePercent(sub)
                   const now = Date.now() / 1000
                   const isExpired = (subscription?.end_time || 0) < now
                   const isCancelled = subscription?.status === 'cancelled'
                   const isActive =
                     subscription?.status === 'active' && !isExpired
+                  const usageSummary = isActive
+                    ? buildSubscriptionUsageSummary(
+                        sub,
+                        planTitle,
+                        now,
+                        preConsumedQuota
+                      )
+                    : null
 
                   return (
                     <div
@@ -497,62 +502,12 @@ export function SubscriptionPlansCard({
                           (subscription?.end_time || 0) * 1000
                         ).toLocaleString()}
                       </div>
-                      {isActive && (subscription?.next_reset_time ?? 0) > 0 && (
-                        <div className='text-muted-foreground mt-1'>
-                          {t('Next reset')}:{' '}
-                          {new Date(
-                            subscription!.next_reset_time! * 1000
-                          ).toLocaleString()}
-                        </div>
-                      )}
-                      <div className='text-muted-foreground mt-1'>
-                        {t('Total Quota')}:{' '}
-                        {totalAmount > 0 ? (
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={<span className='cursor-help' />}
-                            >
-                              {formatQuota(usedAmount)}/
-                              {formatQuota(totalAmount)} · {t('Remaining')}{' '}
-                              {formatQuota(remainAmount)}
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {t('Raw Quota')}: {usedAmount}/{totalAmount} ·{' '}
-                              {t('Remaining')} {remainAmount}
-                            </TooltipContent>
-                          </Tooltip>
-                        ) : (
-                          t('Unlimited')
-                        )}
-                        {totalAmount > 0 && (
-                          <span className='ml-2'>
-                            {t('Used')} {usagePercent}%
-                          </span>
-                        )}
-                      </div>
                       {isActive && (
-                        <>
-                          {totalAmount > 0 && (
-                            <Progress
-                              value={usagePercent}
-                              className='mt-2 h-1.5'
-                            />
-                          )}
-                          <WindowBar
-                            label={t('Weekly window')}
-                            used={weeklyUsed}
-                            limit={weeklyLimit}
-                            resetAt={weeklyResetAt}
-                            resetLabel={t('Resets at')}
-                          />
-                          <WindowBar
-                            label={t('5-hour window')}
-                            used={fiveHourUsed}
-                            limit={fiveHourLimit}
-                            resetAt={fiveHourResetAt}
-                            resetLabel={t('Resets at')}
-                          />
-                        </>
+                        <div className='mt-2'>
+                          {usageSummary?.rows.map((row) => (
+                            <UsagePercentRow key={row.key} row={row} />
+                          ))}
+                        </div>
                       )}
                     </div>
                   )
