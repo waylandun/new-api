@@ -1,10 +1,12 @@
 package claude
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -30,6 +32,22 @@ const (
 	WebSearchMaxUsesMedium = 5
 	WebSearchMaxUsesHigh   = 10
 )
+
+func inferClaudeFileMimeType(mediaMessage dto.MediaContent) string {
+	file := mediaMessage.GetFile()
+	if file == nil {
+		return ""
+	}
+	ext := strings.ToLower(filepath.Ext(file.FileName))
+	switch ext {
+	case ".pdf":
+		return "application/pdf"
+	case ".txt", ".text", ".md", ".markdown", ".csv", ".json", ".log":
+		return "text/plain"
+	default:
+		return ""
+	}
+}
 
 func stopReasonClaude2OpenAI(reason string) string {
 	return reasonmap.ClaudeStopReasonToOpenAIFinishReason(reason)
@@ -377,6 +395,13 @@ func RequestOpenAI2ClaudeMessage(c *gin.Context, textRequest dto.GeneralOpenAIRe
 							})
 						}
 					default:
+						inferredMimeType := ""
+						if mediaMessage.Type == dto.ContentTypeFile {
+							inferredMimeType = inferClaudeFileMimeType(mediaMessage)
+							if inferredMimeType == "" {
+								continue
+							}
+						}
 						source := mediaMessage.ToFileSource()
 						if source == nil {
 							continue
@@ -384,6 +409,20 @@ func RequestOpenAI2ClaudeMessage(c *gin.Context, textRequest dto.GeneralOpenAIRe
 						base64Data, mimeType, err := service.GetBase64Data(c, source, "formatting image for Claude")
 						if err != nil {
 							return nil, fmt.Errorf("get file data failed: %s", err.Error())
+						}
+						if mimeType == "" {
+							mimeType = inferredMimeType
+						}
+						if strings.HasPrefix(mimeType, "text/") {
+							textData, err := base64.StdEncoding.DecodeString(base64Data)
+							if err != nil {
+								return nil, fmt.Errorf("decode text file failed: %s", err.Error())
+							}
+							claudeMediaMessages = append(claudeMediaMessages, dto.ClaudeMediaMessage{
+								Type: "text",
+								Text: common.GetPointer[string](string(textData)),
+							})
+							continue
 						}
 						claudeMediaMessage := dto.ClaudeMediaMessage{
 							Source: &dto.ClaudeMessageSource{
